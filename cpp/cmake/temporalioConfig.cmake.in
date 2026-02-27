@@ -1,0 +1,33 @@
+@PACKAGE_INIT@
+
+# temporalioConfig.cmake - Package configuration for the Temporal C++ SDK.
+#
+# This file is included by find_package(temporalio). It defines the following
+# imported targets:
+#
+#   temporalio::temporalio               - Core SDK library (always available)
+#   temporalio::temporalio_diagnostics   - Diagnostics metrics extension (optional)
+#   temporalio::temporalio_opentelemetry - OpenTelemetry tracing extension (optional)
+#
+# Usage:
+#   find_package(temporalio REQUIRED)
+#   target_link_libraries(my_app PRIVATE temporalio::temporalio)
+
+include(CMakeFindDependencyMacro)
+
+# The core library requires protobuf and nlohmann_json.
+find_dependency(Protobuf)
+find_dependency(nlohmann_json)
+
+# If the OpenTelemetry extension was installed, its consumers need the SDK.
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/temporalioTargets.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/temporalioTargets.cmake")
+endif()
+
+# Check that the opentelemetry target's dependency is available, if that
+# target was exported.
+if(TARGET temporalio::temporalio_opentelemetry)
+    find_dependency(opentelemetry-cpp CONFIG)
+endif()
+
+check_required_components(temporalio)

@@ -1,0 +1,12 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: temporalio
+Description: Temporal C++ SDK - durable execution framework
+Version: @PROJECT_VERSION@
+URL: https://temporal.io/
+Requires: protobuf nlohmann_json
+Libs: -L${libdir} -ltemporalio
+Cflags: -I${includedir} -std=c++20

@@ -169,18 +169,24 @@ void temporal_core_random_fill_bytes(TemporalCoreRandom*, TemporalCoreByteArrayR
 }
 
 // -- Runtime --
+// Return a failure result instead of aborting so that bridge::Runtime throws
+// a catchable exception. This lets the WorkflowEnvironmentFixture gracefully
+// skip integration tests when the Rust bridge is not available.
+static const char kStubErrorMsg[] = "Rust bridge not available (FFI stub)";
+static const TemporalCoreByteArray kStubErrorArray{
+    reinterpret_cast<const uint8_t*>(kStubErrorMsg),
+    sizeof(kStubErrorMsg) - 1
+};
+
 TemporalCoreRuntimeOrFail temporal_core_runtime_new(
     const TemporalCoreRuntimeOptions*) {
-    ffi_stub_abort("temporal_core_runtime_new");
+    return TemporalCoreRuntimeOrFail{nullptr, &kStubErrorArray};
 }
 
-void temporal_core_runtime_free(TemporalCoreRuntime*) {
-    ffi_stub_abort("temporal_core_runtime_free");
-}
+// No-ops: the runtime constructor calls these on failure path with null handles.
+void temporal_core_runtime_free(TemporalCoreRuntime*) {}
 
-void temporal_core_byte_array_free(TemporalCoreRuntime*, const TemporalCoreByteArray*) {
-    ffi_stub_abort("temporal_core_byte_array_free");
-}
+void temporal_core_byte_array_free(TemporalCoreRuntime*, const TemporalCoreByteArray*) {}
 
 // -- Forwarded log accessors --
 TemporalCoreByteArrayRef temporal_core_forwarded_log_target(

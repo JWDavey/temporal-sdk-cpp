@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -14,7 +15,10 @@
 #include <temporal/api/common/v1/message.pb.h>
 #include <temporal/api/failure/v1/message.pb.h>
 
+#include "temporalio/async_/run_sync.h"
 #include "temporalio/bridge/worker.h"
+#include "temporalio/converters/data_converter.h"
+#include "temporalio/converters/payload_conversion.h"
 #include "temporalio/exceptions/temporal_exception.h"
 #include "temporalio/worker/interceptors/worker_interceptor.h"
 
@@ -37,33 +41,9 @@ std::chrono::milliseconds to_millis(const google::protobuf::Duration& d) {
         std::chrono::nanoseconds(d.nanos()));
 }
 
-/// Run a lazy Task<T> to completion synchronously on the current thread.
-/// Drives the coroutine by resuming its handle. If the task suspends
-/// internally (e.g., waiting on a TCS), this blocks using a condition
-/// variable until the task completes.
-template <typename T>
-T run_task_sync(temporalio::async_::Task<T> task) {
-    // The task is lazy (initial_suspend = suspend_always), so the handle
-    // is valid but hasn't started. Resume it to start execution.
-    auto handle = task.handle();
-    if (handle && !handle.done()) {
-        handle.resume();
-    }
-    // After resume, the coroutine may have run to completion synchronously,
-    // or it may have suspended waiting on something. For truly async tasks,
-    // we'd need a more sophisticated approach. For now, assert completion.
-    // The task destructor will handle the frame cleanup.
-    return task.await_resume();
-}
-
-/// Specialization for void tasks.
-void run_task_sync(temporalio::async_::Task<void> task) {
-    auto handle = task.handle();
-    if (handle && !handle.done()) {
-        handle.resume();
-    }
-    task.await_resume();
-}
+// Bring the shared run_task_sync into this translation unit's anonymous
+// namespace so existing call sites (e.g., execute_activity) work unchanged.
+using temporalio::async_::run_task_sync;
 
 }  // namespace
 
@@ -389,9 +369,14 @@ void ActivityWorker::execute_activity(
 
         // Activity completed successfully
         auto* completed = completion.mutable_result()->mutable_completed();
-        // TODO: Serialize result via data converter
-        (void)completed;
-        (void)result;
+        // Serialize result via data converter
+        if (result.has_value() && options_.data_converter &&
+            options_.data_converter->payload_converter) {
+            auto conv_payload =
+                options_.data_converter->payload_converter->to_payload(result);
+            *completed->mutable_result() =
+                converters::to_proto_payload(conv_payload);
+        }
 
     } catch (const activities::CompleteAsyncException&) {
         // Activity will complete asynchronously

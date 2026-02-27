@@ -1,0 +1,51 @@
+# Doxyfile for Temporal C++ SDK
+
+# ── Project metadata ──────────────────────────────────────────────────────────
+PROJECT_NAME           = "Temporal C++ SDK"
+PROJECT_NUMBER         = 0.1.0
+PROJECT_BRIEF          = "C++20 client library for Temporal durable execution"
+OUTPUT_DIRECTORY       = docs
+
+# ── Input sources ─────────────────────────────────────────────────────────────
+# Scan only public headers (include/) and extension public headers.
+INPUT                  = include/temporalio \
+                         extensions/opentelemetry/include \
+                         extensions/diagnostics/include
+RECURSIVE              = YES
+FILE_PATTERNS          = *.h
+EXCLUDE_PATTERNS       = */internal/* */bridge/*
+
+# ── Extraction settings ──────────────────────────────────────────────────────
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = NO
+
+# ── Source browsing ──────────────────────────────────────────────────────────
+SOURCE_BROWSER         = NO
+INLINE_SOURCES         = NO
+REFERENCED_BY_RELATION = NO
+REFERENCES_RELATION    = NO
+
+# ── Output formats ───────────────────────────────────────────────────────────
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_MAN           = NO
+GENERATE_XML           = NO
+
+HTML_OUTPUT            = html
+HTML_COLORSTYLE        = LIGHT
+
+# ── Preprocessing ────────────────────────────────────────────────────────────
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+PREDEFINED             = TEMPORALIO_HAS_PROTOBUF
+
+# ── Diagrams ─────────────────────────────────────────────────────────────────
+HAVE_DOT               = NO
+CLASS_DIAGRAMS         = YES
+
+# ── Warnings ─────────────────────────────────────────────────────────────────
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+QUIET                  = NO

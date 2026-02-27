@@ -185,16 +185,137 @@ if(TEMPORALIO_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-# ── Install ─────────────────────────────────────────────────────────────────
+# ── Documentation ──────────────────────────────────────────────────────────
+find_package(Doxygen QUIET)
+if(DOXYGEN_FOUND)
+    add_custom_target(docs
+        COMMAND ${DOXYGEN_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "Generating API documentation with Doxygen"
+        VERBATIM
+    )
+else()
+    message(STATUS "Temporalio: Doxygen not found - 'docs' target will not be available")
+endif()
+
+# ── Install & Packaging ─────────────────────────────────────────────────────
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
-install(TARGETS temporalio
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+# Determine whether CMake export sets are possible. install(EXPORT ...) requires
+# every linked dependency target to also be in an export set. When dependencies
+# come from FetchContent (not system find_package), they are not exported and
+# CMake generation will fail. Only enable EXPORT when deps are system-provided.
+set(TEMPORALIO_CAN_EXPORT TRUE)
+if(NOT Protobuf_FOUND OR NOT nlohmann_json_FOUND)
+    set(TEMPORALIO_CAN_EXPORT FALSE)
+endif()
 
+if(TEMPORALIO_CAN_EXPORT)
+    install(TARGETS temporalio
+        EXPORT temporalioTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+else()
+    install(TARGETS temporalio
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
+
+# Install public headers preserving directory structure.
 install(DIRECTORY include/temporalio
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.h"
+)
+
+# Install extension targets if they were built.
+if(TARGET temporalio_diagnostics)
+    if(TEMPORALIO_CAN_EXPORT)
+        install(TARGETS temporalio_diagnostics
+            EXPORT temporalioTargets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+    else()
+        install(TARGETS temporalio_diagnostics
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        )
+    endif()
+    install(DIRECTORY extensions/diagnostics/include/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.h"
+    )
+endif()
+
+if(TARGET temporalio_opentelemetry)
+    if(TEMPORALIO_CAN_EXPORT)
+        install(TARGETS temporalio_opentelemetry
+            EXPORT temporalioTargets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+    else()
+        install(TARGETS temporalio_opentelemetry
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        )
+    endif()
+    install(DIRECTORY extensions/opentelemetry/include/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.h"
+    )
+endif()
+
+# Export targets and CMake package config for downstream find_package().
+# Only available when all dependencies were found via find_package (system-installed).
+if(TEMPORALIO_CAN_EXPORT)
+    install(EXPORT temporalioTargets
+        FILE temporalioTargets.cmake
+        NAMESPACE temporalio::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/temporalio
+    )
+
+    configure_package_config_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/temporalioConfig.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/temporalioConfig.cmake"
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/temporalio
+    )
+
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/temporalioConfigVersion.cmake"
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMajorVersion
+    )
+
+    install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/temporalioConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/temporalioConfigVersion.cmake"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/temporalio
+    )
+else()
+    message(STATUS "Temporalio: CMake export/find_package support disabled "
+        "(dependencies come from FetchContent, not system packages)")
+endif()
+
+# Generate pkg-config file (always available regardless of export support).
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/temporalio.pc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/temporalio.pc"
+    @ONLY
+)
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/temporalio.pc"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
 )

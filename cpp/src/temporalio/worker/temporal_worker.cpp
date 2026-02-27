@@ -1,8 +1,11 @@
 #include "temporalio/worker/temporal_worker.h"
 
+#include <atomic>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
+#include "temporalio/async_/run_sync.h"
 #include "temporalio/client/temporal_client.h"
 #include "temporalio/client/temporal_connection.h"
 #include "temporalio/exceptions/temporal_exception.h"
@@ -241,9 +244,10 @@ async_::Task<void> TemporalWorker::execute_async(
             std::make_unique<internal::NexusWorker>(std::move(nexus_opts));
     }
 
-    // Start all poll loops. In the real implementation, these would run
-    // concurrently on separate threads. With our coroutine model, we
-    // use TaskCompletionSource to bridge the async callbacks.
+    // Start all poll loops concurrently on separate threads.
+    // Each sub-worker's execute_async() returns a lazy Task<void> that polls
+    // the bridge for work. We use run_task_sync to drive each coroutine to
+    // completion on its own thread, providing true concurrency.
     //
     // The shutdown flow mirrors C#:
     // 1. Wait for shutdown_token or any poll loop failure
@@ -252,30 +256,56 @@ async_::Task<void> TemporalWorker::execute_async(
     // 4. Wait for all poll loops to complete (they drain remaining work)
     // 5. Finalize shutdown on the bridge
 
-    // Start sub-worker poll loops
-    std::vector<async_::Task<void>> poll_tasks;
+    // Shared state to signal the coroutine when all poll threads finish.
+    auto all_done_tcs =
+        std::make_shared<async_::TaskCompletionSource<void>>();
+    auto remaining = std::make_shared<std::atomic<size_t>>(0);
+    auto first_exception = std::make_shared<std::exception_ptr>(nullptr);
+    auto exception_mutex = std::make_shared<std::mutex>();
+
+    // Helper: run a poll task on a thread and signal when done.
+    auto launch_poll_thread = [&](async_::Task<void> task)
+        -> std::jthread {
+        return std::jthread([all_done_tcs, remaining, first_exception,
+                             exception_mutex,
+                             t = std::move(task)]() mutable {
+            try {
+                async_::run_task_sync(std::move(t));
+            } catch (...) {
+                std::lock_guard lock(*exception_mutex);
+                if (!*first_exception) {
+                    *first_exception = std::current_exception();
+                }
+            }
+            if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                all_done_tcs->try_set_result();
+            }
+        });
+    };
+
+    std::vector<std::jthread> poll_threads;
 
     if (workflow_worker_) {
-        poll_tasks.push_back(workflow_worker_->execute_async());
+        remaining->fetch_add(1, std::memory_order_relaxed);
+        poll_threads.push_back(
+            launch_poll_thread(workflow_worker_->execute_async()));
     }
     if (activity_worker_) {
-        poll_tasks.push_back(activity_worker_->execute_async());
+        remaining->fetch_add(1, std::memory_order_relaxed);
+        poll_threads.push_back(
+            launch_poll_thread(activity_worker_->execute_async()));
     }
     if (nexus_worker_) {
-        poll_tasks.push_back(nexus_worker_->execute_async());
+        remaining->fetch_add(1, std::memory_order_relaxed);
+        poll_threads.push_back(
+            launch_poll_thread(nexus_worker_->execute_async()));
     }
 
     // If no sub-workers, nothing to do
-    if (poll_tasks.empty()) {
+    if (poll_threads.empty()) {
         co_return;
     }
 
-    // Wait for all poll tasks to complete.
-    // In the full implementation, we'd use when_any with a shutdown signal
-    // to detect early termination. For now, we await all tasks sequentially.
-    // The bridge polls will return nullopt on shutdown, causing the poll
-    // loops to exit naturally.
-    //
     // Monitor the shutdown token: when triggered, initiate bridge shutdown
     // which causes polls to return nullopt.
     std::stop_callback shutdown_cb(shutdown_token, [this]() {
@@ -290,9 +320,19 @@ async_::Task<void> TemporalWorker::execute_async(
         }
     });
 
-    // Await all poll tasks
-    for (auto& task : poll_tasks) {
-        co_await std::move(task);
+    // Wait for all poll threads to complete.
+    co_await all_done_tcs->task();
+
+    // Join all threads (they should already be done since TCS was signaled).
+    for (auto& t : poll_threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+
+    // Propagate the first exception from any poll loop.
+    if (*first_exception) {
+        std::rethrow_exception(*first_exception);
     }
 
     // Finalize shutdown on the bridge

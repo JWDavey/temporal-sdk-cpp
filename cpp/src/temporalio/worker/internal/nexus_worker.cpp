@@ -1,16 +1,22 @@
 #include "temporalio/worker/internal/nexus_worker.h"
 
+#include <any>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
 
+#include <temporalio/async_/run_sync.h>
+
 #include <temporal/sdk/core/nexus/nexus.pb.h>
+#include <temporal/api/common/v1/message.pb.h>
 #include <temporal/api/nexus/v1/message.pb.h>
 #include <temporal/api/workflowservice/v1/request_response.pb.h>
 
 #include "temporalio/bridge/worker.h"
+
+using temporalio::async_::run_task_sync;
 
 namespace temporalio::worker::internal {
 
@@ -237,7 +243,7 @@ void NexusWorker::handle_start_operation(
     const std::string& service_name,
     const std::string& operation_name,
     nexus::INexusOperationHandler* handler,
-    const std::vector<uint8_t>& /*input*/) {
+    const std::vector<uint8_t>& input) {
     // Create a running task state
     auto running = std::make_shared<RunningNexusTask>();
     running->task_token = task_token;
@@ -257,7 +263,7 @@ void NexusWorker::handle_start_operation(
     running->thread = std::jthread([this, running, handler, client, ns,
                                     task_queue, bridge_worker,
                                     service_name, operation_name,
-                                    task_token,
+                                    task_token, input,
                                     token_key = std::string(
                                         task_token.begin(),
                                         task_token.end())]() {
@@ -266,23 +272,75 @@ void NexusWorker::handle_start_operation(
         op_info.ns = ns;
         op_info.task_queue = task_queue;
 
-        nexus::OperationContext op_ctx;
-        op_ctx.service = service_name;
-        op_ctx.operation = operation_name;
+        nexus::OperationStartContext start_ctx;
+        start_ctx.service = service_name;
+        start_ctx.operation = operation_name;
 
         nexus::NexusOperationExecutionContext exec_ctx(
-            std::move(op_ctx), std::move(op_info), client);
+            nexus::OperationContext{service_name, operation_name, {}},
+            std::move(op_info), client);
         nexus::ContextScope scope(&exec_ctx);
 
-        // TODO: Wire handler execution with coroutine support
-        // In the full implementation:
-        //   auto result = co_await handler->start_async(start_ctx, input);
-        //   Build completion from result and send via bridge
+        try {
+            // Execute the handler's start method synchronously
+            auto result = run_task_sync(
+                handler->start_async(std::move(start_ctx),
+                                     std::any(input)));
 
-        // For now, send an error indicating the handler is not yet wired
-        send_nexus_error_completion(
-            bridge_worker, task_token,
-            "INTERNAL", "Nexus handler execution not yet implemented");
+            // Build the NexusTaskCompletion from the result
+            coresdk::nexus::NexusTaskCompletion completion;
+            completion.set_task_token(
+                std::string(task_token.begin(), task_token.end()));
+
+            auto* response = completion.mutable_completed();
+            auto* start_response = response->mutable_start_operation();
+
+            if (result.is_sync) {
+                // Synchronous completion -- set the payload
+                auto* sync = start_response->mutable_sync_success();
+                // The sync_result is a std::any; if it holds raw bytes
+                // (std::vector<uint8_t>), set them as the payload data.
+                if (result.sync_result.has_value()) {
+                    try {
+                        auto& bytes = std::any_cast<
+                            const std::vector<uint8_t>&>(
+                            result.sync_result);
+                        sync->mutable_payload()->set_data(
+                            bytes.data(), bytes.size());
+                    } catch (const std::bad_any_cast&) {
+                        // If the result is a string, serialize as string
+                        try {
+                            auto& str = std::any_cast<const std::string&>(
+                                result.sync_result);
+                            sync->mutable_payload()->set_data(
+                                str.data(), str.size());
+                        } catch (const std::bad_any_cast&) {
+                            // Other types: leave payload empty
+                        }
+                    }
+                }
+            } else {
+                // Async completion -- set the operation token
+                auto* async_resp = start_response->mutable_async_success();
+                async_resp->set_operation_token(
+                    result.async_operation_token);
+            }
+
+            std::string bytes;
+            completion.SerializeToString(&bytes);
+            std::vector<uint8_t> completion_bytes(
+                bytes.begin(), bytes.end());
+            if (bridge_worker) {
+                bridge_worker->complete_nexus_task_async(
+                    std::span<const uint8_t>(completion_bytes),
+                    [](std::string) {});
+            }
+        } catch (const std::exception& e) {
+            // Handler threw an exception -- send error completion
+            send_nexus_error_completion(
+                bridge_worker, task_token,
+                "INTERNAL", e.what());
+        }
 
         // Remove from running tasks
         {
