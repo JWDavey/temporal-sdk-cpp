@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -331,13 +332,29 @@ public:
     }
 
     /// Build and return the final WorkflowDefinition.
+    /// @throws std::logic_error if build() has already been called.
     std::shared_ptr<WorkflowDefinition> build() {
-        auto result = std::make_shared<WorkflowDefinition>(std::move(def_));
+        if (built_) {
+            throw std::logic_error(
+                "WorkflowDefinition::Builder::build() called more than once");
+        }
+        if (!def_.run_func_) {
+            throw std::logic_error(
+                "WorkflowDefinition::Builder::build() called without setting "
+                "a run function (use .run() or .run_method())");
+        }
+        built_ = true;
+        // Cannot use std::make_shared here because WorkflowDefinition's
+        // constructors are private. Builder has access as a nested class,
+        // but std::make_shared constructs via an allocator that does not.
+        auto result = std::shared_ptr<WorkflowDefinition>(
+            new WorkflowDefinition(std::move(def_)));
         return result;
     }
 
 private:
     WorkflowDefinition def_;
+    bool built_{false};
 };
 
 template <typename T>

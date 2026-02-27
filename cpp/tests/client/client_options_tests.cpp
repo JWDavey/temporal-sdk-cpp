@@ -265,7 +265,7 @@ TEST(WorkflowOptionsTest, CustomValues) {
         .task_timeout = 10000ms,
         .id_reuse_policy = WorkflowIdReusePolicy::kAllowDuplicate,
         .id_conflict_policy = WorkflowIdConflictPolicy::kFail,
-        .retry_policy = RetryPolicy{.max_attempts = 3},
+        .retry_policy = RetryPolicy{.maximum_attempts = 3},
         .cron_schedule = "0 * * * *",
         .start_delay = 5000ms,
         .request_id = "req-abc",
@@ -278,7 +278,7 @@ TEST(WorkflowOptionsTest, CustomValues) {
     EXPECT_EQ(opts.id_reuse_policy, WorkflowIdReusePolicy::kAllowDuplicate);
     EXPECT_EQ(opts.id_conflict_policy, WorkflowIdConflictPolicy::kFail);
     EXPECT_TRUE(opts.retry_policy.has_value());
-    EXPECT_EQ(opts.retry_policy->max_attempts, 3);
+    EXPECT_EQ(opts.retry_policy->maximum_attempts, 3);
     EXPECT_EQ(opts.cron_schedule.value(), "0 * * * *");
     EXPECT_EQ(opts.start_delay.value(), 5000ms);
     EXPECT_EQ(opts.request_id.value(), "req-abc");

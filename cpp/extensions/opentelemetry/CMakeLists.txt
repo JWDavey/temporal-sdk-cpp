@@ -3,7 +3,11 @@
 # Provides TracingInterceptor for automatic span creation and context
 # propagation across workflow/activity/Nexus boundaries.
 
-find_package(opentelemetry-cpp CONFIG REQUIRED)
+find_package(opentelemetry-cpp CONFIG QUIET)
+if(NOT opentelemetry-cpp_FOUND)
+    message(STATUS "Temporalio: opentelemetry-cpp not found - skipping OpenTelemetry extension")
+    return()
+endif()
 
 add_library(temporalio_opentelemetry
     src/tracing_interceptor.cpp

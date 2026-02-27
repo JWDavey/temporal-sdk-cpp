@@ -5,6 +5,7 @@
 #include <coroutine>
 #include <exception>
 #include <optional>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -216,6 +217,10 @@ Task<std::vector<T>> when_all(std::vector<Task<T>> tasks) {
 }
 
 /// Await all void tasks. If any throws, the first exception is propagated.
+///
+/// Note: this is an `inline` coroutine (non-template) defined in a header.
+/// The `inline` keyword is required to avoid ODR violations when this header
+/// is included from multiple translation units.
 inline Task<void> when_all(std::vector<Task<void>> tasks) {
     for (auto& t : tasks) {
         co_await std::move(t);
@@ -230,14 +235,22 @@ struct WhenAnyResult {
 };
 
 /// Await the first task to complete and return its index and result.
-/// Note: since lazy tasks execute sequentially when awaited, this evaluates
-/// tasks in order and returns the first one that succeeds.
+///
+/// IMPORTANT: Because Task<T> is a lazy coroutine (initial_suspend =
+/// suspend_always), this function evaluates tasks sequentially, not
+/// concurrently. Each task starts only when the previous one completes.
+/// For purely lazy tasks, this always returns index 0.
+///
+/// This function is useful when tasks are backed by TaskCompletionSource,
+/// where the coroutine body immediately suspends waiting for an external
+/// signal. In that pattern, the first task to have its TCS completed
+/// resumes and "wins" the race.
+///
+/// For true concurrent racing, use multiple poll loops with a shared
+/// shutdown signal (as done in TemporalWorker::execute_async).
 template <typename T>
 Task<WhenAnyResult<T>> when_any(std::vector<Task<T>> tasks) {
     for (size_t i = 0; i < tasks.size(); ++i) {
-        // In the lazy model, we execute each task; the first to return is the
-        // "winner". This is primarily useful with TaskCompletionSource-based
-        // tasks where the coroutine suspends awaiting external completion.
         auto result = co_await std::move(tasks[i]);
         co_return WhenAnyResult<T>{i, std::move(result)};
     }

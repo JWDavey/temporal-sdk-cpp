@@ -32,7 +32,7 @@ public:
         : runtime_(runtime), byte_array_(byte_array) {}
 
     ~ByteArray() {
-        if (byte_array_ && runtime_) {
+        if (byte_array_ && runtime_ && !byte_array_->disable_free) {
             temporal_core_byte_array_free(runtime_, byte_array_);
         }
     }
@@ -48,7 +48,7 @@ public:
 
     ByteArray& operator=(ByteArray&& other) noexcept {
         if (this != &other) {
-            if (byte_array_ && runtime_) {
+            if (byte_array_ && runtime_ && !byte_array_->disable_free) {
                 temporal_core_byte_array_free(runtime_, byte_array_);
             }
             runtime_ = other.runtime_;

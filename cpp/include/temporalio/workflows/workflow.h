@@ -100,6 +100,21 @@ public:
     virtual bool patched(const std::string& patch_id) = 0;
     virtual void deprecate_patch(const std::string& patch_id) = 0;
 
+    /// Create a timer that resolves after the given duration.
+    /// Returns a Task<void> that completes when the timer fires.
+    /// The optional stop_token allows cancellation of the timer.
+    virtual async_::Task<void> start_timer(
+        std::chrono::milliseconds duration,
+        std::stop_token ct) = 0;
+
+    /// Register a condition predicate and return a Task<bool> that completes
+    /// when the condition becomes true or the optional timeout expires.
+    /// Returns true if the condition was met, false if timeout expired.
+    virtual async_::Task<bool> register_condition(
+        std::function<bool()> condition,
+        std::optional<std::chrono::milliseconds> timeout,
+        std::stop_token ct) = 0;
+
     /// Get the current workflow context. Returns nullptr if not in workflow.
     static WorkflowContext* current() noexcept { return current_; }
 

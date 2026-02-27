@@ -15,7 +15,7 @@ TEST(SearchAttributeKeyTest, DifferentTypes) {
     auto text_key = search_attribute::create_text("text-field");
     EXPECT_EQ(text_key.value_type(), IndexedValueType::kText);
 
-    auto int_key = search_attribute::create_int("int-field");
+    auto int_key = search_attribute::create_long("int-field");
     EXPECT_EQ(int_key.value_type(), IndexedValueType::kInt);
 
     auto double_key = search_attribute::create_double("double-field");
@@ -38,13 +38,13 @@ TEST(SearchAttributeCollectionTest, EmptyCollection) {
 }
 
 TEST(IndexedValueTypeTest, EnumValues) {
-    EXPECT_EQ(static_cast<int>(IndexedValueType::kText), 0);
-    EXPECT_EQ(static_cast<int>(IndexedValueType::kKeyword), 1);
-    EXPECT_EQ(static_cast<int>(IndexedValueType::kInt), 2);
-    EXPECT_EQ(static_cast<int>(IndexedValueType::kDouble), 3);
-    EXPECT_EQ(static_cast<int>(IndexedValueType::kBool), 4);
-    EXPECT_EQ(static_cast<int>(IndexedValueType::kDatetime), 5);
-    EXPECT_EQ(static_cast<int>(IndexedValueType::kKeywordList), 6);
+    EXPECT_EQ(static_cast<int>(IndexedValueType::kText), 1);
+    EXPECT_EQ(static_cast<int>(IndexedValueType::kKeyword), 2);
+    EXPECT_EQ(static_cast<int>(IndexedValueType::kInt), 3);
+    EXPECT_EQ(static_cast<int>(IndexedValueType::kDouble), 4);
+    EXPECT_EQ(static_cast<int>(IndexedValueType::kBool), 5);
+    EXPECT_EQ(static_cast<int>(IndexedValueType::kDatetime), 6);
+    EXPECT_EQ(static_cast<int>(IndexedValueType::kKeywordList), 7);
 }
 
 } // namespace

@@ -31,16 +31,38 @@ struct LogForwardingOptions {
         callback;
 };
 
+/// OpenTelemetry options (owning, C++ friendly).
+struct OpenTelemetryOptions {
+    std::string url;
+    std::string headers;  // newline-delimited key=value pairs
+    uint32_t metric_periodicity_millis = 0;
+    TemporalCoreOpenTelemetryMetricTemporality metric_temporality =
+        TemporalCoreOpenTelemetryMetricTemporality::Cumulative;
+    bool durations_as_seconds = false;
+    TemporalCoreOpenTelemetryProtocol protocol =
+        TemporalCoreOpenTelemetryProtocol::Grpc;
+    std::string histogram_bucket_overrides;
+};
+
+/// Prometheus options (owning, C++ friendly).
+struct PrometheusOptions {
+    std::string bind_address;
+    bool counters_total_suffix = false;
+    bool unit_suffix = false;
+    bool durations_as_seconds = false;
+    std::string histogram_bucket_overrides;
+};
+
 /// Options for creating a runtime.
 struct RuntimeOptions {
     /// Optional log forwarding configuration.
     std::unique_ptr<LogForwardingOptions> log_forwarding;
 
-    /// Optional OpenTelemetry metrics endpoint.
-    std::unique_ptr<TemporalCoreOpenTelemetryOptions> opentelemetry;
+    /// Optional OpenTelemetry metrics.
+    std::unique_ptr<OpenTelemetryOptions> opentelemetry;
 
-    /// Optional Prometheus metrics endpoint.
-    std::unique_ptr<TemporalCorePrometheusOptions> prometheus;
+    /// Optional Prometheus metrics.
+    std::unique_ptr<PrometheusOptions> prometheus;
 
     /// Optional custom metric meter.
     const TemporalCoreCustomMetricMeter* custom_meter = nullptr;
@@ -75,6 +97,9 @@ public:
     /// Throws std::runtime_error on failure.
     explicit Runtime(const RuntimeOptions& options);
 
+    /// Destructor. Unregisters from log forwarding if enabled.
+    ~Runtime();
+
     /// Get the raw runtime pointer (for passing to other FFI functions).
     TemporalCoreRuntime* get() const noexcept { return handle_.get(); }
 
@@ -93,17 +118,21 @@ public:
         }
     }
 
-    // Non-copyable but movable. The shared_ptr inside allows sharing
-    // via shared_handle(), but the Runtime wrapper itself is not copied.
+    /// Dispatch a forwarded log to this runtime's callback. Called by the
+    /// global log registry. Public so the registry can call it.
+    void dispatch_log(TemporalCoreForwardedLogLevel level,
+                      const TemporalCoreForwardedLog* log) const;
+
+    // Non-copyable, non-movable (registered in global log registry by pointer).
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
-    Runtime(Runtime&&) noexcept = default;
-    Runtime& operator=(Runtime&&) noexcept = default;
+    Runtime(Runtime&&) = delete;
+    Runtime& operator=(Runtime&&) = delete;
 
 private:
     RuntimeHandle handle_;
 
-    /// Static callback that dispatches to the LogForwardingOptions callback.
+    /// Static callback that dispatches to all registered runtimes.
     static void log_callback(TemporalCoreForwardedLogLevel level,
                              const TemporalCoreForwardedLog* log);
 

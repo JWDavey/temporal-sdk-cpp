@@ -316,3 +316,140 @@ TEST(TaskCompletionSourceTest, SetResultFromAnotherThread) {
 
     EXPECT_EQ(runner.get_result(), 777);
 }
+
+// ===========================================================================
+// ResumeCallback tests
+// ===========================================================================
+
+TEST(TaskCompletionSourceTest, ResumeCallbackInvokedOnSetResult) {
+    std::coroutine_handle<> captured_handle{nullptr};
+    ResumeCallback cb = [&](std::coroutine_handle<> h) {
+        captured_handle = h;
+    };
+
+    TaskCompletionSource<int> tcs(cb);
+
+    auto runner = SyncRunner<int>::create(tcs.task());
+    auto h = runner.runner_task.handle();
+    h.resume();  // Start, will suspend at TCS
+
+    // Set result -- should invoke callback instead of resume()
+    tcs.set_result(42);
+
+    // The callback captured the handle but did NOT resume it
+    EXPECT_NE(captured_handle, nullptr);
+    EXPECT_FALSE(runner.runner_task.handle().done());
+
+    // Now manually resume via the captured handle
+    captured_handle.resume();
+    EXPECT_EQ(runner.get_result(), 42);
+}
+
+TEST(TaskCompletionSourceTest, ResumeCallbackInvokedOnSetException) {
+    std::coroutine_handle<> captured_handle{nullptr};
+    ResumeCallback cb = [&](std::coroutine_handle<> h) {
+        captured_handle = h;
+    };
+
+    TaskCompletionSource<int> tcs(cb);
+
+    auto runner = SyncRunner<int>::create(tcs.task());
+    auto h = runner.runner_task.handle();
+    h.resume();
+
+    tcs.set_exception(std::make_exception_ptr(std::runtime_error("cb boom")));
+
+    EXPECT_NE(captured_handle, nullptr);
+    captured_handle.resume();
+    EXPECT_THROW(runner.get_result(), std::runtime_error);
+}
+
+TEST(TaskCompletionSourceTest, ResumeCallbackNotCalledWhenSetBeforeAwait) {
+    bool callback_called = false;
+    ResumeCallback cb = [&](std::coroutine_handle<> h) {
+        callback_called = true;
+        h.resume();
+    };
+
+    TaskCompletionSource<int> tcs(cb);
+    tcs.set_result(42);  // Set before anyone awaits -- no waiter to resume
+
+    EXPECT_FALSE(callback_called);
+
+    auto runner = SyncRunner<int>::create(tcs.task());
+    runner.drive();
+    EXPECT_EQ(runner.get_result(), 42);
+    // Callback was never called because there was no waiter at set_result time
+    EXPECT_FALSE(callback_called);
+}
+
+TEST(TaskCompletionSourceVoidTest, ResumeCallbackInvokedOnSetResult) {
+    std::coroutine_handle<> captured_handle{nullptr};
+    ResumeCallback cb = [&](std::coroutine_handle<> h) {
+        captured_handle = h;
+    };
+
+    TaskCompletionSource<void> tcs(cb);
+
+    struct VoidRunner {
+        bool completed = false;
+        std::exception_ptr exception;
+        Task<void> runner_task;
+
+        static VoidRunner create(Task<void> t) {
+            VoidRunner vr;
+            vr.runner_task = run(std::move(t), vr);
+            return vr;
+        }
+        static Task<void> run(Task<void> t, VoidRunner& vr) {
+            try {
+                co_await std::move(t);
+                vr.completed = true;
+            } catch (...) {
+                vr.exception = std::current_exception();
+            }
+        }
+    };
+
+    auto vr = VoidRunner::create(tcs.task());
+    auto h = vr.runner_task.handle();
+    h.resume();  // Start, will suspend at TCS
+
+    tcs.set_result();
+
+    EXPECT_NE(captured_handle, nullptr);
+    EXPECT_FALSE(vr.completed);
+
+    captured_handle.resume();
+    EXPECT_TRUE(vr.completed);
+}
+
+TEST(TaskCompletionSourceTest, ResumeCallbackFromAnotherThread) {
+    std::vector<std::coroutine_handle<>> external_queue;
+    std::mutex mu;
+
+    ResumeCallback cb = [&](std::coroutine_handle<> h) {
+        std::lock_guard lock(mu);
+        external_queue.push_back(h);
+    };
+
+    TaskCompletionSource<int> tcs(cb);
+
+    auto runner = SyncRunner<int>::create(tcs.task());
+    auto h = runner.runner_task.handle();
+    h.resume();  // Suspend at TCS
+
+    // Complete from another thread -- callback enqueues instead of resuming
+    std::thread t([&]() { tcs.set_result(999); });
+    t.join();
+
+    // Verify the handle was enqueued, not directly resumed
+    {
+        std::lock_guard lock(mu);
+        ASSERT_EQ(external_queue.size(), 1u);
+    }
+
+    // Now drain the queue on the "correct" thread
+    external_queue[0].resume();
+    EXPECT_EQ(runner.get_result(), 999);
+}

@@ -11,13 +11,13 @@ namespace {
 
 /// Context passed through FFI callbacks for client connect.
 struct ConnectCallbackContext {
-    Runtime* runtime;
+    RuntimeHandle runtime_handle;
     ClientConnectCallback callback;
 };
 
 /// Context passed through FFI callbacks for RPC calls.
 struct RpcCallbackContext {
-    Runtime* runtime;
+    RuntimeHandle runtime_handle;
     RpcCallCallback callback;
 };
 
@@ -29,7 +29,7 @@ void Client::connect_async(Runtime& runtime,
     // We need to heap-allocate the callback context because the FFI call
     // is asynchronous - the callback fires on a Rust thread.
     auto ctx = std::make_unique<ConnectCallbackContext>();
-    ctx->runtime = &runtime;
+    ctx->runtime_handle = runtime.shared_handle();
     ctx->callback = std::move(callback);
 
     // NOTE: CallScope is destroyed when this function returns, which is before
@@ -125,7 +125,7 @@ void Client::connect_async(Runtime& runtime,
                     static_cast<ConnectCallbackContext*>(ud));
 
             if (fail) {
-                ByteArray error_bytes(ctx_ptr->runtime->get(), fail);
+                ByteArray error_bytes(ctx_ptr->runtime_handle.get(), fail);
                 ctx_ptr->callback(nullptr, error_bytes.to_string());
             } else {
                 ctx_ptr->callback(
@@ -137,12 +137,12 @@ void Client::connect_async(Runtime& runtime,
 }
 
 Client::Client(Runtime& runtime, ClientHandle handle)
-    : runtime_(&runtime), handle_(std::move(handle)) {}
+    : runtime_handle_(runtime.shared_handle()), handle_(std::move(handle)) {}
 
 void Client::rpc_call_async(const RpcCallOptions& options,
                             RpcCallCallback callback) {
     auto ctx = std::make_unique<RpcCallbackContext>();
-    ctx->runtime = runtime_;
+    ctx->runtime_handle = runtime_handle_;
     ctx->callback = std::move(callback);
 
     CallScope scope;
@@ -152,9 +152,10 @@ void Client::rpc_call_async(const RpcCallOptions& options,
     interop_opts.rpc = scope.byte_array(options.rpc);
     interop_opts.req = scope.byte_array(
         std::span<const uint8_t>(options.request));
-    interop_opts.retry = options.retry ? 1 : 0;
+    interop_opts.retry = options.retry;
     interop_opts.timeout_millis = options.timeout_millis;
-    interop_opts.cancellation_token = nullptr;
+    interop_opts.cancellation_token =
+        options.cancellation_token ? options.cancellation_token->get() : nullptr;
 
     if (!options.metadata.empty()) {
         interop_opts.metadata =
@@ -187,25 +188,26 @@ void Client::rpc_call_async(const RpcCallOptions& options,
 
             if (failure_message && status_code > 0) {
                 // gRPC error with status code
-                ByteArray msg(ctx_ptr->runtime->get(), failure_message);
+                ByteArray msg(ctx_ptr->runtime_handle.get(), failure_message);
                 RpcCallError error;
                 error.status_code = status_code;
                 error.message = msg.to_string();
                 if (failure_details) {
-                    ByteArray details(ctx_ptr->runtime->get(), failure_details);
+                    ByteArray details(ctx_ptr->runtime_handle.get(),
+                                     failure_details);
                     error.details = details.to_bytes();
                 }
                 ctx_ptr->callback(std::nullopt, std::move(error));
             } else if (failure_message) {
                 // Generic error
-                ByteArray msg(ctx_ptr->runtime->get(), failure_message);
+                ByteArray msg(ctx_ptr->runtime_handle.get(), failure_message);
                 RpcCallError error;
                 error.status_code = 0;
                 error.message = msg.to_string();
                 ctx_ptr->callback(std::nullopt, std::move(error));
             } else {
                 // Success
-                ByteArray response(ctx_ptr->runtime->get(), success);
+                ByteArray response(ctx_ptr->runtime_handle.get(), success);
                 RpcCallResult result;
                 result.response = response.to_bytes();
                 ctx_ptr->callback(std::move(result), std::nullopt);

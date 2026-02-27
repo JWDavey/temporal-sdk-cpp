@@ -11,25 +11,25 @@ namespace {
 
 /// Context passed through FFI callbacks for worker operations.
 struct WorkerCallbackContext {
-    Runtime* runtime;
+    RuntimeHandle runtime_handle;
     WorkerCallback callback;
 };
 
 /// Context passed through FFI callbacks for poll operations.
 struct PollCallbackContext {
-    Runtime* runtime;
+    RuntimeHandle runtime_handle;
     WorkerPollCallback callback;
 };
 
 }  // namespace
 
 Worker::Worker(Client& client, const TemporalCoreWorkerOptions& options)
-    : runtime_(&client.runtime()),
+    : runtime_handle_(client.shared_runtime_handle()),
       client_handle_(client.shared_handle()) {
     auto result = temporal_core_worker_new(client.get(), &options);
 
     if (result.fail != nullptr) {
-        ByteArray error(runtime_->get(), result.fail);
+        ByteArray error(runtime_handle_.get(), result.fail);
         throw std::runtime_error("Failed to create worker: " +
                                  error.to_string());
     }
@@ -38,11 +38,11 @@ Worker::Worker(Client& client, const TemporalCoreWorkerOptions& options)
 }
 
 Worker::Worker(Runtime& runtime, WorkerHandle handle)
-    : runtime_(&runtime), handle_(std::move(handle)) {}
+    : runtime_handle_(runtime.shared_handle()), handle_(std::move(handle)) {}
 
 void Worker::validate_async(WorkerCallback callback) {
     auto ctx = std::make_unique<WorkerCallbackContext>();
-    ctx->runtime = runtime_;
+    ctx->runtime_handle = runtime_handle_;
     ctx->callback = std::move(callback);
 
     void* user_data = ctx.release();
@@ -55,18 +55,19 @@ void Worker::replace_client(Client& client) {
     auto* fail =
         temporal_core_worker_replace_client(handle_.get(), client.get());
     if (fail) {
-        ByteArray error(runtime_->get(), fail);
+        ByteArray error(runtime_handle_.get(), fail);
         throw std::runtime_error("Failed to replace worker client: " +
                                  error.to_string());
     }
-    // Update the shared reference so the old client can be released
+    // Update the shared references so the old client can be released
     // and the new client stays alive while this worker exists.
     client_handle_ = client.shared_handle();
+    runtime_handle_ = client.shared_runtime_handle();
 }
 
 void Worker::poll_workflow_activation_async(WorkerPollCallback callback) {
     auto ctx = std::make_unique<PollCallbackContext>();
-    ctx->runtime = runtime_;
+    ctx->runtime_handle = runtime_handle_;
     ctx->callback = std::move(callback);
 
     void* user_data = ctx.release();
@@ -77,7 +78,7 @@ void Worker::poll_workflow_activation_async(WorkerPollCallback callback) {
 
 void Worker::poll_activity_task_async(WorkerPollCallback callback) {
     auto ctx = std::make_unique<PollCallbackContext>();
-    ctx->runtime = runtime_;
+    ctx->runtime_handle = runtime_handle_;
     ctx->callback = std::move(callback);
 
     void* user_data = ctx.release();
@@ -88,7 +89,7 @@ void Worker::poll_activity_task_async(WorkerPollCallback callback) {
 
 void Worker::poll_nexus_task_async(WorkerPollCallback callback) {
     auto ctx = std::make_unique<PollCallbackContext>();
-    ctx->runtime = runtime_;
+    ctx->runtime_handle = runtime_handle_;
     ctx->callback = std::move(callback);
 
     void* user_data = ctx.release();
@@ -101,7 +102,7 @@ void Worker::complete_workflow_activation_async(
     std::span<const uint8_t> completion,
     WorkerCallback callback) {
     auto ctx = std::make_unique<WorkerCallbackContext>();
-    ctx->runtime = runtime_;
+    ctx->runtime_handle = runtime_handle_;
     ctx->callback = std::move(callback);
 
     CallScope scope;
@@ -120,7 +121,7 @@ void Worker::complete_activity_task_async(
     std::span<const uint8_t> completion,
     WorkerCallback callback) {
     auto ctx = std::make_unique<WorkerCallbackContext>();
-    ctx->runtime = runtime_;
+    ctx->runtime_handle = runtime_handle_;
     ctx->callback = std::move(callback);
 
     CallScope scope;
@@ -135,7 +136,7 @@ void Worker::complete_nexus_task_async(
     std::span<const uint8_t> completion,
     WorkerCallback callback) {
     auto ctx = std::make_unique<WorkerCallbackContext>();
-    ctx->runtime = runtime_;
+    ctx->runtime_handle = runtime_handle_;
     ctx->callback = std::move(callback);
 
     CallScope scope;
@@ -152,7 +153,7 @@ void Worker::record_activity_heartbeat(std::span<const uint8_t> heartbeat) {
     auto* fail =
         temporal_core_worker_record_activity_heartbeat(handle_.get(), ref);
     if (fail) {
-        ByteArray error(runtime_->get(), fail);
+        ByteArray error(runtime_handle_.get(), fail);
         throw std::runtime_error("Failed to record activity heartbeat: " +
                                  error.to_string());
     }
@@ -170,7 +171,7 @@ void Worker::initiate_shutdown() {
 
 void Worker::finalize_shutdown_async(WorkerCallback callback) {
     auto ctx = std::make_unique<WorkerCallbackContext>();
-    ctx->runtime = runtime_;
+    ctx->runtime_handle = runtime_handle_;
     ctx->callback = std::move(callback);
 
     void* user_data = ctx.release();
@@ -187,13 +188,13 @@ void Worker::handle_poll_callback(void* user_data,
             static_cast<PollCallbackContext*>(user_data));
 
     if (fail) {
-        ByteArray error(ctx->runtime->get(), fail);
+        ByteArray error(ctx->runtime_handle.get(), fail);
         ctx->callback(std::nullopt, error.to_string());
     } else if (!success) {
         // Null success means shutdown (poller stopped)
         ctx->callback(std::nullopt, std::string{});
     } else {
-        ByteArray data(ctx->runtime->get(), success);
+        ByteArray data(ctx->runtime_handle.get(), success);
         ctx->callback(data.to_bytes(), std::string{});
     }
 }
@@ -205,7 +206,7 @@ void Worker::handle_worker_callback(void* user_data,
             static_cast<WorkerCallbackContext*>(user_data));
 
     if (fail) {
-        ByteArray error(ctx->runtime->get(), fail);
+        ByteArray error(ctx->runtime_handle.get(), fail);
         ctx->callback(error.to_string());
     } else {
         ctx->callback(std::string{});

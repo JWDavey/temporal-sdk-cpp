@@ -1,6 +1,23 @@
 # tests/CMakeLists.txt - Google Test targets for Temporal C++ SDK
 
-find_package(GTest CONFIG REQUIRED)
+find_package(GTest CONFIG QUIET)
+if(NOT GTest_FOUND)
+    find_package(GTest QUIET)
+endif()
+if(NOT GTest_FOUND)
+    message(STATUS "Temporalio: GTest not found via find_package, using FetchContent")
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        URL https://github.com/google/googletest/releases/download/v1.15.2/googletest-1.15.2.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    # Prevent overriding parent project compiler/linker settings on Windows
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+else()
+    message(STATUS "Temporalio: Found GTest via find_package")
+endif()
 
 include(GoogleTest)
 
@@ -26,7 +43,6 @@ target_link_libraries(temporalio_tests
     PRIVATE
         temporalio
         GTest::gtest
-        GTest::gtest_main
         GTest::gmock
 )
 

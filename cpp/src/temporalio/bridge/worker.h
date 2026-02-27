@@ -105,8 +105,15 @@ public:
     /// Get the raw worker pointer.
     TemporalCoreWorker* get() const noexcept { return handle_.get(); }
 
-    /// Get the associated runtime.
-    Runtime& runtime() const noexcept { return *runtime_; }
+    /// Get the shared runtime handle (keeps the Rust runtime alive).
+    const RuntimeHandle& shared_runtime_handle() const noexcept {
+        return runtime_handle_;
+    }
+
+    /// Get the raw runtime pointer (for byte_array_free etc.).
+    TemporalCoreRuntime* runtime_ptr() const noexcept {
+        return runtime_handle_.get();
+    }
 
     // Move-only
     Worker(const Worker&) = delete;
@@ -115,7 +122,7 @@ public:
     Worker& operator=(Worker&&) noexcept = default;
 
 private:
-    Runtime* runtime_;
+    RuntimeHandle runtime_handle_;
     WorkerHandle handle_;
 
     /// Shared reference to the client handle, keeping it alive while this

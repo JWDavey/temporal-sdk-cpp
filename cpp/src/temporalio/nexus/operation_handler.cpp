@@ -227,6 +227,7 @@ async_::Task<std::any> WorkflowRunOperationHandler::fetch_result_async(
     OperationFetchResultContext /*context*/) {
     // TODO: Implement result fetching by polling/waiting on the workflow
     throw std::logic_error("fetch_result_async not implemented");
+    co_return std::any{};  // unreachable, makes this a coroutine
 }
 
 async_::Task<NexusOperationState>
@@ -234,6 +235,7 @@ WorkflowRunOperationHandler::fetch_info_async(
     OperationFetchInfoContext /*context*/) {
     // TODO: Implement by describing the workflow
     throw std::logic_error("fetch_info_async not implemented");
+    co_return NexusOperationState{};  // unreachable, makes this a coroutine
 }
 
 async_::Task<void> WorkflowRunOperationHandler::cancel_async(

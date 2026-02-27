@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <span>
 #include <string>
 #include <string_view>
@@ -177,7 +178,10 @@ public:
 
 private:
     /// String data backing ByteArrayRef pointers.
-    std::vector<std::string> owned_strings_;
+    /// Uses deque instead of vector: deque::push_back never invalidates
+    /// references to existing elements, which is critical since ByteArrayRef
+    /// pointers point directly into these strings.
+    std::deque<std::string> owned_strings_;
 
     /// Arrays of ByteArrayRef (for ByteArrayRefArray results).
     std::vector<std::vector<TemporalCoreByteArrayRef>> owned_ref_arrays_;

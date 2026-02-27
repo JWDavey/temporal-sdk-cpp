@@ -16,6 +16,17 @@ WorkflowInstance::WorkflowInstance(Config config)
 WorkflowInstance::~WorkflowInstance() = default;
 
 std::vector<WorkflowInstance::Command> WorkflowInstance::activate(
+    const std::vector<Job>& jobs,
+    const ActivationMetadata& metadata) {
+    current_time_ = metadata.timestamp;
+    is_replaying_ = metadata.is_replaying;
+    current_history_length_ = metadata.history_length;
+    current_history_size_ = static_cast<int>(metadata.history_size_bytes);
+    continue_as_new_suggested_ = metadata.continue_as_new_suggested;
+    return activate(jobs);
+}
+
+std::vector<WorkflowInstance::Command> WorkflowInstance::activate(
     const std::vector<Job>& jobs) {
     commands_.clear();
     current_activation_exception_ = nullptr;
@@ -118,6 +129,22 @@ void WorkflowInstance::run_once(bool check_conds) {
                 auto& [pred, tcs] = *it;
                 if (pred()) {
                     tcs->try_set_result(true);
+
+                    // If this condition had a timeout timer, cancel it.
+                    auto ct_it = condition_to_timeout_.find(tcs.get());
+                    if (ct_it != condition_to_timeout_.end()) {
+                        uint32_t timeout_seq = ct_it->second;
+                        pending_timers_.erase(timeout_seq);
+                        timeout_to_condition_.erase(timeout_seq);
+                        // Emit a CancelTimer command.
+                        Command cancel_cmd;
+                        cancel_cmd.type = CommandType::kCancelTimer;
+                        cancel_cmd.seq = timeout_seq;
+                        cancel_cmd.data = CancelTimerData{timeout_seq};
+                        commands_.push_back(std::move(cancel_cmd));
+                        condition_to_timeout_.erase(ct_it);
+                    }
+
                     it = conditions_.erase(it);
                     // A condition was met -- its TCS completion may have
                     // enqueued new tasks. Break to re-drain before checking
@@ -177,6 +204,130 @@ void WorkflowInstance::deprecate_patch(const std::string& patch_id) {
     patches_memoized_[patch_id] = true;
 }
 
+async_::Task<void> WorkflowInstance::start_timer(
+    std::chrono::milliseconds duration,
+    std::stop_token ct) {
+    // Allocate a sequence number for this timer.
+    uint32_t seq = ++timer_counter_;
+
+    // Create a TCS with resume callback routed through the scheduler.
+    auto tcs = std::make_shared<async_::TaskCompletionSource<std::any>>(
+        make_resume_callback());
+    pending_timers_[seq] = tcs;
+
+    // Emit the StartTimer command.
+    Command cmd;
+    cmd.type = CommandType::kStartTimer;
+    cmd.seq = seq;
+    cmd.data = StartTimerData{seq, duration};
+    commands_.push_back(std::move(cmd));
+
+    // If a cancellation token was provided, register a callback to cancel
+    // the timer when cancellation is requested.
+    std::optional<std::stop_callback<std::function<void()>>> cancel_cb;
+    if (ct.stop_possible()) {
+        cancel_cb.emplace(ct, std::function<void()>([this, seq, tcs]() {
+            // Remove from pending and cancel the TCS.
+            pending_timers_.erase(seq);
+            tcs->try_set_exception(std::make_exception_ptr(
+                std::runtime_error("Timer cancelled")));
+
+            // Emit a CancelTimer command so the server knows.
+            Command cancel_cmd;
+            cancel_cmd.type = CommandType::kCancelTimer;
+            cancel_cmd.seq = seq;
+            cancel_cmd.data = CancelTimerData{seq};
+            commands_.push_back(std::move(cancel_cmd));
+        }));
+    }
+
+    // Suspend until the timer fires (handle_fire_timer resolves the TCS)
+    // or cancellation triggers.
+    co_await tcs->task();
+}
+
+async_::Task<bool> WorkflowInstance::register_condition(
+    std::function<bool()> condition,
+    std::optional<std::chrono::milliseconds> timeout,
+    std::stop_token ct) {
+    // If the condition is already true, return immediately.
+    if (condition && condition()) {
+        co_return true;
+    }
+
+    // Create a TCS for the condition with resume callback routed through
+    // the scheduler to maintain deterministic execution order.
+    auto cond_tcs = std::make_shared<async_::TaskCompletionSource<bool>>(
+        make_resume_callback());
+
+    // Register the condition in the conditions list. The run_once() loop
+    // checks these conditions after each scheduler drain.
+    conditions_.push_back({condition, cond_tcs});
+
+    // If a timeout is specified, start a timer. When the timer fires,
+    // handle_fire_timer() will check timeout_to_condition_ and resolve
+    // the condition TCS with false.
+    std::optional<uint32_t> timeout_timer_seq;
+    if (timeout.has_value()) {
+        uint32_t seq = ++timer_counter_;
+        timeout_timer_seq = seq;
+
+        // Create a timer TCS. Nobody co_awaits this directly; it exists
+        // so handle_fire_timer() can find and resolve it, which triggers
+        // the timeout_to_condition_ lookup to resolve the condition TCS.
+        auto timer_tcs = std::make_shared<async_::TaskCompletionSource<std::any>>(
+            make_resume_callback());
+        pending_timers_[seq] = timer_tcs;
+
+        // Bidirectional mapping between timeout timer and condition.
+        timeout_to_condition_[seq] = cond_tcs;
+        condition_to_timeout_[cond_tcs.get()] = seq;
+
+        // Emit the StartTimer command for the timeout.
+        Command cmd;
+        cmd.type = CommandType::kStartTimer;
+        cmd.seq = seq;
+        cmd.data = StartTimerData{seq, *timeout};
+        commands_.push_back(std::move(cmd));
+    }
+
+    // If a cancellation token was provided, register a callback to cancel
+    // the condition wait and any associated timeout timer.
+    std::optional<std::stop_callback<std::function<void()>>> cancel_cb;
+    if (ct.stop_possible()) {
+        cancel_cb.emplace(ct, std::function<void()>([this, cond_tcs, timeout_timer_seq]() {
+            // Remove the condition from the deque.
+            for (auto it = conditions_.begin(); it != conditions_.end(); ++it) {
+                if (it->second == cond_tcs) {
+                    conditions_.erase(it);
+                    break;
+                }
+            }
+            // Cancel the timeout timer if any.
+            if (timeout_timer_seq.has_value()) {
+                pending_timers_.erase(*timeout_timer_seq);
+                timeout_to_condition_.erase(*timeout_timer_seq);
+                condition_to_timeout_.erase(cond_tcs.get());
+
+                Command cancel_cmd;
+                cancel_cmd.type = CommandType::kCancelTimer;
+                cancel_cmd.seq = *timeout_timer_seq;
+                cancel_cmd.data = CancelTimerData{*timeout_timer_seq};
+                commands_.push_back(std::move(cancel_cmd));
+            }
+            cond_tcs->try_set_exception(std::make_exception_ptr(
+                std::runtime_error("Wait condition cancelled")));
+        }));
+    }
+
+    // Suspend until either:
+    // - The condition becomes true (run_once resolves cond_tcs with true)
+    // - The timeout timer fires (handle_fire_timer resolves cond_tcs with false)
+    // - Cancellation triggers (cancel_cb resolves cond_tcs with exception)
+    bool result = co_await cond_tcs->task();
+    co_return result;
+}
+
 void WorkflowInstance::handle_start_workflow(const Job& /*job*/) {
     if (workflow_started_) {
         return;
@@ -227,13 +378,50 @@ void WorkflowInstance::handle_fire_timer(const Job& job) {
         it->second->try_set_result(std::any{});
         pending_timers_.erase(it);
     }
+
+    // Check if this timer was a timeout for a wait_condition.
+    // If so, resolve the condition TCS with false (timeout expired) and
+    // remove the condition from the conditions deque.
+    auto cond_it = timeout_to_condition_.find(seq);
+    if (cond_it != timeout_to_condition_.end()) {
+        auto& cond_tcs = cond_it->second;
+        // Remove the associated condition from the conditions deque.
+        for (auto dit = conditions_.begin(); dit != conditions_.end(); ++dit) {
+            if (dit->second == cond_tcs) {
+                conditions_.erase(dit);
+                break;
+            }
+        }
+        // Clean up the reverse mapping.
+        condition_to_timeout_.erase(cond_tcs.get());
+        // Resolve with false = timeout expired.
+        cond_tcs->try_set_result(false);
+        timeout_to_condition_.erase(cond_it);
+    }
 }
 
 void WorkflowInstance::handle_resolve_activity(const Job& job) {
-    auto seq = std::any_cast<uint32_t>(job.data);
+    // Accept both ActivityResolution (new) and uint32_t (legacy tests)
+    uint32_t seq;
+    std::any resolution_data;
+
+    try {
+        const auto& resolution =
+            std::any_cast<const ActivityResolution&>(job.data);
+        seq = resolution.seq;
+        resolution_data = std::any(resolution);
+    } catch (const std::bad_any_cast&) {
+        seq = std::any_cast<uint32_t>(job.data);
+        // Legacy path: wrap in a completed resolution
+        ActivityResolution res;
+        res.seq = seq;
+        res.status = ResolutionStatus::kCompleted;
+        resolution_data = std::any(res);
+    }
+
     auto it = pending_activities_.find(seq);
     if (it != pending_activities_.end()) {
-        it->second->try_set_result(std::any{});
+        it->second->try_set_result(std::move(resolution_data));
         pending_activities_.erase(it);
     }
 }
@@ -284,14 +472,31 @@ void WorkflowInstance::handle_signal_workflow(const Job& job) {
 
 void WorkflowInstance::handle_query_workflow(const Job& job) {
     // Queries are handled synchronously -- they don't go through the
-    // scheduler. Results use kRespondQuery (not kCompleteWorkflow) and
+    // scheduler. Results use kRespondQuery / kRespondQueryFailed and
     // are routed to the query response section of the activation
     // completion, not the workflow command list.
-    auto& query_data =
-        std::any_cast<const std::pair<std::string, std::vector<std::any>>&>(
-            job.data);
-    const auto& query_name = query_data.first;
-    const auto& args = query_data.second;
+    //
+    // Each response carries a QueryId for correlation with the server.
+
+    // Accept both QueryWorkflowData (new) and pair (legacy tests)
+    const QueryWorkflowData* query_ptr = nullptr;
+    QueryWorkflowData query_from_pair;
+
+    try {
+        query_ptr = &std::any_cast<const QueryWorkflowData&>(job.data);
+    } catch (const std::bad_any_cast&) {
+        // Legacy pair format for backward compatibility
+        auto& pair_data =
+            std::any_cast<const std::pair<std::string, std::vector<std::any>>&>(
+                job.data);
+        query_from_pair.query_name = pair_data.first;
+        query_from_pair.args = pair_data.second;
+        query_ptr = &query_from_pair;
+    }
+
+    const auto& query_id = query_ptr->query_id;
+    const auto& query_name = query_ptr->query_name;
+    const auto& args = query_ptr->args;
 
     auto& queries = definition_->queries();
     auto it = queries.find(query_name);
@@ -300,12 +505,12 @@ void WorkflowInstance::handle_query_workflow(const Job& job) {
             auto result = it->second.handler(instance_.get(), args);
             Command cmd;
             cmd.type = CommandType::kRespondQuery;
-            cmd.data = std::move(result);
+            cmd.data = QueryResponseData{query_id, std::move(result), {}};
             commands_.push_back(std::move(cmd));
         } catch (const std::exception& e) {
             Command cmd;
-            cmd.type = CommandType::kRespondQuery;
-            cmd.data = std::string(e.what());  // Error response
+            cmd.type = CommandType::kRespondQueryFailed;
+            cmd.data = QueryResponseData{query_id, {}, e.what()};
             commands_.push_back(std::move(cmd));
         }
     } else if (definition_->dynamic_query()) {
@@ -314,14 +519,23 @@ void WorkflowInstance::handle_query_workflow(const Job& job) {
                 definition_->dynamic_query()->handler(instance_.get(), args);
             Command cmd;
             cmd.type = CommandType::kRespondQuery;
-            cmd.data = std::move(result);
+            cmd.data = QueryResponseData{query_id, std::move(result), {}};
             commands_.push_back(std::move(cmd));
         } catch (const std::exception& e) {
             Command cmd;
-            cmd.type = CommandType::kRespondQuery;
-            cmd.data = std::string(e.what());
+            cmd.type = CommandType::kRespondQueryFailed;
+            cmd.data = QueryResponseData{query_id, {}, e.what()};
             commands_.push_back(std::move(cmd));
         }
+    } else {
+        // Unknown query -- respond with failure
+        Command cmd;
+        cmd.type = CommandType::kRespondQueryFailed;
+        cmd.data = QueryResponseData{
+            query_id, {},
+            "Query handler for '" + query_name +
+                "' is not registered on this workflow"};
+        commands_.push_back(std::move(cmd));
     }
 }
 
@@ -330,74 +544,168 @@ void WorkflowInstance::handle_cancel_workflow(const Job& /*job*/) {
 }
 
 void WorkflowInstance::handle_resolve_child_workflow(const Job& job) {
-    auto seq = std::any_cast<uint32_t>(job.data);
+    // Accept both ChildWorkflowResolution (new) and uint32_t (legacy tests)
+    uint32_t seq;
+    std::any resolution_data;
+
+    try {
+        const auto& resolution =
+            std::any_cast<const ChildWorkflowResolution&>(job.data);
+        seq = resolution.seq;
+        resolution_data = std::any(resolution);
+    } catch (const std::bad_any_cast&) {
+        seq = std::any_cast<uint32_t>(job.data);
+        // Legacy path: wrap in a completed resolution
+        ChildWorkflowResolution res;
+        res.seq = seq;
+        res.status = ResolutionStatus::kCompleted;
+        resolution_data = std::any(res);
+    }
+
     auto it = pending_child_workflows_.find(seq);
     if (it != pending_child_workflows_.end()) {
-        it->second->try_set_result(std::any{});
+        it->second->try_set_result(std::move(resolution_data));
         pending_child_workflows_.erase(it);
     }
 }
 
 void WorkflowInstance::handle_do_update(const Job& job) {
-    // TODO: Full implementation requires validation, acceptance, and
-    // rejection phases (237 lines in C#). For now, look up the update
-    // handler and run it through run_top_level.
-    auto& update_data =
-        std::any_cast<const std::pair<std::string, std::vector<std::any>>&>(
-            job.data);
-    const auto& update_name = update_data.first;
-    const auto& args = update_data.second;
+    // Try DoUpdateData first (new format), fall back to pair (legacy tests)
+    const DoUpdateData* update_ptr = nullptr;
+    DoUpdateData update_from_pair;
 
+    try {
+        update_ptr = &std::any_cast<const DoUpdateData&>(job.data);
+    } catch (const std::bad_any_cast&) {
+        // Fall back to legacy pair format for backward compatibility
+        auto& pair_data =
+            std::any_cast<const std::pair<std::string, std::vector<std::any>>&>(
+                job.data);
+        update_from_pair.name = pair_data.first;
+        update_from_pair.args = pair_data.second;
+        update_from_pair.run_validator = true;
+        update_ptr = &update_from_pair;
+    }
+
+    const auto& update = *update_ptr;
+    const auto& update_name = update.name;
+    const auto& args = update.args;
+
+    // Look up update definition
     auto& updates = definition_->updates();
     auto it = updates.find(update_name);
+    const workflows::WorkflowUpdateDefinition* defn = nullptr;
+
     if (it != updates.end()) {
-        // Run validator synchronously if present
-        if (it->second.validator) {
-            try {
-                it->second.validator(instance_.get(), args);
-            } catch (...) {
-                // Validation failure -- reject the update
-                // TODO: emit proper rejection command
-                return;
-            }
-        }
-
-        // Run handler through run_top_level
-        ++in_progress_handler_count_;
-        auto task =
-            run_top_level(it->second.handler, instance_.get(), args,
-                          /*is_handler=*/true);
-        scheduler_.schedule(task.handle());
-        running_tasks_.push_back(std::move(task));
+        defn = &it->second;
     } else if (definition_->dynamic_update()) {
-        if (definition_->dynamic_update()->validator) {
-            try {
-                definition_->dynamic_update()->validator(instance_.get(), args);
-            } catch (...) {
-                return;
-            }
-        }
-
-        ++in_progress_handler_count_;
-        auto task = run_top_level(
-            definition_->dynamic_update()->handler, instance_.get(), args,
-            /*is_handler=*/true);
-        scheduler_.schedule(task.handle());
-        running_tasks_.push_back(std::move(task));
+        defn = &*definition_->dynamic_update();
     }
-    // Else: unknown update is rejected
+
+    if (!defn) {
+        // Unknown update -- reject
+        Command cmd;
+        cmd.type = CommandType::kUpdateRejected;
+        UpdateResponseData resp;
+        resp.protocol_instance_id = update.protocol_instance_id;
+        resp.update_name = update_name;
+        resp.error = "Update handler for " + update_name +
+                     " expected but not found";
+        cmd.data = std::move(resp);
+        commands_.push_back(std::move(cmd));
+        return;
+    }
+
+    // Run validator if requested and validator exists
+    if (update.run_validator && defn->validator) {
+        try {
+            defn->validator(instance_.get(), args);
+        } catch (const std::exception& e) {
+            // Validation failure -- reject
+            Command cmd;
+            cmd.type = CommandType::kUpdateRejected;
+            UpdateResponseData resp;
+            resp.protocol_instance_id = update.protocol_instance_id;
+            resp.update_name = update_name;
+            resp.error = e.what();
+            cmd.data = std::move(resp);
+            commands_.push_back(std::move(cmd));
+            return;
+        }
+    }
+
+    // Accepted
+    {
+        Command cmd;
+        cmd.type = CommandType::kUpdateAccepted;
+        UpdateResponseData resp;
+        resp.protocol_instance_id = update.protocol_instance_id;
+        resp.update_name = update_name;
+        cmd.data = std::move(resp);
+        commands_.push_back(std::move(cmd));
+    }
+
+    // Run the handler asynchronously. Wrap it to emit completion/rejection
+    // response commands when the handler finishes.
+    auto handler_func = defn->handler;
+    std::string proto_id = update.protocol_instance_id;
+    std::string uname = update_name;
+
+    auto update_wrapper =
+        [this, handler_func, proto_id = std::move(proto_id),
+         uname = std::move(uname)](
+            void* inst, std::vector<std::any> a) -> async_::Task<std::any> {
+        try {
+            auto result = co_await handler_func(inst, std::move(a));
+            // Success -- emit completed response
+            Command cmd;
+            cmd.type = CommandType::kUpdateCompleted;
+            UpdateResponseData resp;
+            resp.protocol_instance_id = proto_id;
+            resp.update_name = uname;
+            resp.result = std::move(result);
+            cmd.data = std::move(resp);
+            commands_.push_back(std::move(cmd));
+            co_return std::any{};
+        } catch (const std::exception& e) {
+            // Handler failure -- emit rejected response
+            Command cmd;
+            cmd.type = CommandType::kUpdateRejected;
+            UpdateResponseData resp;
+            resp.protocol_instance_id = proto_id;
+            resp.update_name = uname;
+            resp.error = e.what();
+            cmd.data = std::move(resp);
+            commands_.push_back(std::move(cmd));
+            co_return std::any{};
+        }
+    };
+
+    ++in_progress_handler_count_;
+    auto task = run_top_level(update_wrapper, instance_.get(), args,
+                              /*is_handler=*/true);
+    scheduler_.schedule(task.handle());
+    running_tasks_.push_back(std::move(task));
 }
 
 void WorkflowInstance::handle_resolve_signal_external_workflow(
-    const Job& /*job*/) {
-    // TODO: Implement when signal-external-workflow support is added.
-    // The job data should contain a sequence number to resolve a pending
-    // TaskCompletionSource.
+    const Job& job) {
+    auto seq = std::any_cast<uint32_t>(job.data);
+    auto it = pending_external_signals_.find(seq);
+    if (it != pending_external_signals_.end()) {
+        it->second->try_set_result(std::any{});
+        pending_external_signals_.erase(it);
+    }
 }
 
 void WorkflowInstance::handle_resolve_request_cancel_external_workflow(
-    const Job& /*job*/) {
-    // TODO: Implement when cancel-external-workflow support is added.
+    const Job& job) {
+    auto seq = std::any_cast<uint32_t>(job.data);
+    auto it = pending_external_cancels_.find(seq);
+    if (it != pending_external_cancels_.end()) {
+        it->second->try_set_result(std::any{});
+        pending_external_cancels_.erase(it);
+    }
 }
 
 void WorkflowInstance::handle_notify_has_patch(const Job& job) {
@@ -405,8 +713,27 @@ void WorkflowInstance::handle_notify_has_patch(const Job& job) {
     patches_notified_.insert(std::move(patch_id));
 }
 
-void WorkflowInstance::handle_resolve_nexus_operation(const Job& /*job*/) {
-    // TODO: Implement when Nexus operation support is added to workflows.
+void WorkflowInstance::handle_resolve_nexus_operation(const Job& job) {
+    auto seq = std::any_cast<uint32_t>(job.data);
+    auto it = pending_nexus_operations_.find(seq);
+    if (it != pending_nexus_operations_.end()) {
+        it->second->try_set_result(std::any{});
+        pending_nexus_operations_.erase(it);
+    }
+}
+
+async_::ResumeCallback WorkflowInstance::make_resume_callback() {
+    // Capture a pointer to the scheduler. This is safe because the
+    // WorkflowInstance (and thus the scheduler) outlives all TCS objects
+    // created through this callback.
+    auto* sched = &scheduler_;
+    return [sched](std::coroutine_handle<> h) {
+        // Route the coroutine resumption through the scheduler instead of
+        // resuming inline. This ensures deterministic execution order:
+        // the coroutine will be resumed during the next scheduler drain()
+        // in the order determined by the scheduler (FIFO).
+        sched->schedule(h);
+    };
 }
 
 async_::Task<std::any> WorkflowInstance::run_top_level(

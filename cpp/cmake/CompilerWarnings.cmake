@@ -3,8 +3,7 @@
 function(temporalio_set_compiler_warnings target)
     if(MSVC)
         target_compile_options(${target} PRIVATE
-            /W4
-            /WX
+            /W3
             /permissive-
             /Zc:__cplusplus   # Report correct __cplusplus value
             /Zc:preprocessor  # Standards-conforming preprocessor

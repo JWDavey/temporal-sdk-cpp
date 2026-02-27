@@ -38,7 +38,7 @@ TEST(FailureConverterTest, ToFailureFromRuntimeError) {
     auto failure = failure_conv.to_failure(ex_ptr, payload_conv);
 
     EXPECT_EQ(failure.message, "test failure");
-    EXPECT_FALSE(failure.type.empty());
+    EXPECT_FALSE(failure.failure_type.empty());
 }
 
 TEST(FailureConverterTest, ToFailureFromInvalidArgument) {
@@ -143,9 +143,9 @@ TEST(FailureConverterTest, RoundTripEmptyMessage) {
 TEST(FailureStructTest, DefaultValues) {
     Failure f;
     EXPECT_TRUE(f.message.empty());
-    EXPECT_TRUE(f.type.empty());
+    EXPECT_TRUE(f.failure_type.empty());
     EXPECT_TRUE(f.stack_trace.empty());
-    EXPECT_FALSE(f.cause.has_value());
+    EXPECT_EQ(f.cause, nullptr);
 }
 
 TEST(FailureStructTest, WithCause) {
@@ -155,7 +155,7 @@ TEST(FailureStructTest, WithCause) {
     f.cause->message = "inner error";
 
     EXPECT_EQ(f.message, "outer error");
-    EXPECT_TRUE(f.cause.has_value());
+    EXPECT_NE(f.cause, nullptr);
     EXPECT_EQ(f.cause->message, "inner error");
 }
 
@@ -174,15 +174,15 @@ TEST(FailureStructTest, NestedCauses) {
     EXPECT_EQ(outer.message, "outer error");
     EXPECT_EQ(outer.cause->message, "middle error");
     EXPECT_EQ(outer.cause->cause->message, "root cause");
-    EXPECT_FALSE(outer.cause->cause->cause.has_value());
+    EXPECT_EQ(outer.cause->cause->cause, nullptr);
 }
 
 TEST(FailureStructTest, WithType) {
     Failure f;
     f.message = "test";
-    f.type = "ApplicationFailure";
+    f.failure_type = "ApplicationFailure";
 
-    EXPECT_EQ(f.type, "ApplicationFailure");
+    EXPECT_EQ(f.failure_type, "ApplicationFailure");
 }
 
 TEST(FailureStructTest, WithStackTrace) {

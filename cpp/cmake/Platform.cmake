@@ -21,8 +21,12 @@ endif()
 message(STATUS "Temporalio: Detected platform: ${TEMPORALIO_PLATFORM}")
 
 # ── Find Rust / Cargo ──────────────────────────────────────────────────────
-find_program(CARGO_EXECUTABLE cargo REQUIRED)
-message(STATUS "Temporalio: Found cargo: ${CARGO_EXECUTABLE}")
+find_program(CARGO_EXECUTABLE cargo)
+if(CARGO_EXECUTABLE)
+    message(STATUS "Temporalio: Found cargo: ${CARGO_EXECUTABLE}")
+else()
+    message(STATUS "Temporalio: cargo not found - Rust bridge build will be stubbed")
+endif()
 
 # ── temporalio_build_rust_bridge ────────────────────────────────────────────
 # Creates an IMPORTED static library target built via `cargo build`.
@@ -38,6 +42,14 @@ function(temporalio_build_rust_bridge)
 
     if(NOT ARG_TARGET OR NOT ARG_CARGO_DIR OR NOT ARG_CRATE_NAME)
         message(FATAL_ERROR "temporalio_build_rust_bridge requires TARGET, CARGO_DIR, and CRATE_NAME")
+    endif()
+
+    # If cargo is not available, create a stub INTERFACE target so downstream
+    # targets can still link against it (no actual Rust library will be produced).
+    if(NOT CARGO_EXECUTABLE)
+        add_library(${ARG_TARGET} INTERFACE)
+        message(STATUS "Temporalio: Rust bridge target '${ARG_TARGET}' -> STUB (cargo not found)")
+        return()
     endif()
 
     # Determine Rust build profile.

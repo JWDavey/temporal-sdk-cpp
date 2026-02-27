@@ -13,7 +13,7 @@
 #include <random>
 #include <stop_token>
 #include <string>
-#include <tuple>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -58,7 +58,63 @@ public:
         kFailWorkflow,
         kCancelWorkflow,
         kRespondQuery,
+        kRespondQueryFailed,
         kSetPatchMarker,
+        kUpdateAccepted,
+        kUpdateRejected,
+        kUpdateCompleted,
+        kScheduleNexusOperation,
+        kCancelNexusOperation,
+    };
+
+    /// Data for a StartTimer command.
+    struct StartTimerData {
+        uint32_t seq{0};
+        std::chrono::milliseconds duration{0};
+    };
+
+    /// Data for a CancelTimer command.
+    struct CancelTimerData {
+        uint32_t seq{0};
+    };
+
+    /// Data for query response commands (kRespondQuery / kRespondQueryFailed).
+    struct QueryResponseData {
+        std::string query_id;
+        std::any result;       // For success: the query result
+        std::string error;     // For failure: the error message
+    };
+
+    /// Data for update response commands (accepted/rejected/completed).
+    struct UpdateResponseData {
+        std::string protocol_instance_id;
+        std::string update_name;
+        std::any result;   // For completed: the return value
+        std::string error; // For rejected: the error message
+    };
+
+    /// Result status for activity/child workflow resolution.
+    enum class ResolutionStatus {
+        kCompleted,
+        kFailed,
+        kCancelled,
+    };
+
+    /// Data for an activity resolution job (kResolveActivity).
+    /// Carries the full result so the caller can inspect success/failure.
+    struct ActivityResolution {
+        uint32_t seq{0};
+        ResolutionStatus status{ResolutionStatus::kCompleted};
+        std::any result;       // Completed: decoded payload
+        std::string failure;   // Failed/Cancelled: error message
+    };
+
+    /// Data for a child workflow resolution job (kResolveChildWorkflow).
+    struct ChildWorkflowResolution {
+        uint32_t seq{0};
+        ResolutionStatus status{ResolutionStatus::kCompleted};
+        std::any result;       // Completed: decoded payload
+        std::string failure;   // Failed/Cancelled: error message
     };
 
     /// A command to be sent back to the server.
@@ -91,11 +147,36 @@ public:
         std::any data;  // Job-specific payload
     };
 
+    /// Data for a QueryWorkflow job.
+    struct QueryWorkflowData {
+        std::string query_id;
+        std::string query_name;
+        std::vector<std::any> args;
+    };
+
+    /// Data for a DoUpdate job.
+    struct DoUpdateData {
+        std::string id;
+        std::string name;
+        std::string protocol_instance_id;
+        std::vector<std::any> args;
+        bool run_validator{false};
+    };
+
     /// Configuration for creating a WorkflowInstance.
     struct Config {
         std::shared_ptr<workflows::WorkflowDefinition> definition;
         workflows::WorkflowInfo info;
         uint64_t randomness_seed{0};
+    };
+
+    /// Metadata from the activation envelope (set before processing jobs).
+    struct ActivationMetadata {
+        std::chrono::system_clock::time_point timestamp{};
+        bool is_replaying{false};
+        int history_length{0};
+        uint64_t history_size_bytes{0};
+        bool continue_as_new_suggested{false};
     };
 
     explicit WorkflowInstance(Config config);
@@ -108,6 +189,10 @@ public:
     /// Process an activation (list of jobs) and return commands.
     /// This is the main entry point called by the WorkflowWorker.
     std::vector<Command> activate(const std::vector<Job>& jobs);
+
+    /// Process an activation with metadata from the activation envelope.
+    std::vector<Command> activate(const std::vector<Job>& jobs,
+                                  const ActivationMetadata& metadata);
 
     // -- WorkflowContext interface --
     const workflows::WorkflowInfo& info() const override { return info_; }
@@ -128,6 +213,13 @@ public:
     const workflows::WorkflowUpdateInfo* current_update_info() const override;
     bool patched(const std::string& patch_id) override;
     void deprecate_patch(const std::string& patch_id) override;
+    async_::Task<void> start_timer(
+        std::chrono::milliseconds duration,
+        std::stop_token ct) override;
+    async_::Task<bool> register_condition(
+        std::function<bool()> condition,
+        std::optional<std::chrono::milliseconds> timeout,
+        std::stop_token ct) override;
 
     /// Get pending commands to send to the server.
     const std::vector<Command>& pending_commands() const noexcept {
@@ -166,6 +258,17 @@ private:
         std::function<async_::Task<std::any>(void*, std::vector<std::any>)> func,
         void* instance, std::vector<std::any> args, bool is_handler);
 
+    /// Create a ResumeCallback that routes coroutine resumption through the
+    /// scheduler. When a TCS completes, instead of resuming the awaiting
+    /// coroutine inline, the handle is enqueued to the scheduler. This
+    /// ensures deterministic execution order controlled by the scheduler.
+    ///
+    /// Uses schedule() (not schedule_from_external()) because all TCS
+    /// completions within the WorkflowInstance happen on the workflow thread
+    /// during activate(). If external-thread completion is ever needed,
+    /// use schedule_from_external() instead.
+    async_::ResumeCallback make_resume_callback();
+
     // -- State --
     std::shared_ptr<workflows::WorkflowDefinition> definition_;
     workflows::WorkflowInfo info_;
@@ -190,12 +293,32 @@ private:
     std::unordered_map<uint32_t,
                        std::shared_ptr<async_::TaskCompletionSource<std::any>>>
         pending_child_workflows_;
+    std::unordered_map<uint32_t,
+                       std::shared_ptr<async_::TaskCompletionSource<std::any>>>
+        pending_external_signals_;
+    std::unordered_map<uint32_t,
+                       std::shared_ptr<async_::TaskCompletionSource<std::any>>>
+        pending_external_cancels_;
+    std::unordered_map<uint32_t,
+                       std::shared_ptr<async_::TaskCompletionSource<std::any>>>
+        pending_nexus_operations_;
 
     // Conditions waiting to be checked
     std::deque<
-        std::tuple<std::function<bool()>,
-                   std::shared_ptr<async_::TaskCompletionSource<bool>>>>
+        std::pair<std::function<bool()>,
+                  std::shared_ptr<async_::TaskCompletionSource<bool>>>>
         conditions_;
+
+    // Timeout timer seq -> condition TCS mapping.
+    // When a wait_condition has a timeout, we create a timer. When that timer
+    // fires, we resolve the associated condition TCS with false.
+    std::unordered_map<uint32_t,
+                       std::shared_ptr<async_::TaskCompletionSource<bool>>>
+        timeout_to_condition_;
+
+    // Reverse mapping: condition TCS address -> timeout timer seq.
+    // Used when a condition is met to cancel its associated timeout timer.
+    std::unordered_map<void*, uint32_t> condition_to_timeout_;
 
     // Patches
     std::unordered_set<std::string> patches_notified_;
@@ -208,6 +331,9 @@ private:
     uint32_t timer_counter_{0};
     uint32_t activity_counter_{0};
     uint32_t child_workflow_counter_{0};
+    uint32_t external_signal_counter_{0};
+    uint32_t external_cancel_counter_{0};
+    uint32_t nexus_operation_counter_{0};
 
     // Activation state
     std::chrono::system_clock::time_point current_time_;

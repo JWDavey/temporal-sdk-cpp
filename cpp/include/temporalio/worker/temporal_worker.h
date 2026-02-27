@@ -2,6 +2,7 @@
 
 /// @file TemporalWorker that polls task queues and dispatches to workflows/activities.
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -14,6 +15,10 @@
 #include <temporalio/activities/activity.h>
 #include <temporalio/async_/task.h>
 #include <temporalio/workflows/workflow_definition.h>
+
+namespace temporalio::bridge {
+class Worker;
+}
 
 namespace temporalio::client {
 class TemporalClient;
@@ -28,6 +33,13 @@ class NexusServiceDefinition;
 }
 
 namespace temporalio::worker {
+
+// Forward declarations
+namespace internal {
+class WorkflowWorker;
+class ActivityWorker;
+class NexusWorker;
+}  // namespace internal
 
 // Forward declarations for interceptors
 namespace interceptors {
@@ -170,9 +182,17 @@ public:
     /// Get the worker options.
     const TemporalWorkerOptions& options() const noexcept { return options_; }
 
+    /// Get the bridge worker (for internal use).
+    bridge::Worker* bridge_worker() const noexcept {
+        return bridge_worker_.get();
+    }
+
 private:
     std::shared_ptr<client::TemporalClient> client_;
     TemporalWorkerOptions options_;
+
+    // Bridge worker (owned)
+    std::unique_ptr<bridge::Worker> bridge_worker_;
 
     // Internal workflow/activity name lookup maps built at construction
     std::unordered_map<std::string,
@@ -184,6 +204,14 @@ private:
 
     // Dynamic (unnamed) workflow definition, if any.
     std::shared_ptr<workflows::WorkflowDefinition> dynamic_workflow_;
+
+    // Sub-workers (created during execute_async)
+    std::unique_ptr<internal::WorkflowWorker> workflow_worker_;
+    std::unique_ptr<internal::ActivityWorker> activity_worker_;
+    std::unique_ptr<internal::NexusWorker> nexus_worker_;
+
+    // Whether the worker has been started (prevents double-start)
+    std::atomic<bool> started_{false};
 };
 
 }  // namespace temporalio::worker

@@ -2,8 +2,10 @@
 
 /// @file Thread-safe bridge from callbacks to coroutines.
 
+#include <cassert>
 #include <coroutine>
 #include <exception>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <type_traits>
@@ -12,6 +14,13 @@
 #include <temporalio/async_/task.h>
 
 namespace temporalio::async_ {
+
+/// Callback type for routing coroutine resumption to the correct thread.
+/// When set on a TaskCompletionSource, the resume is routed through this
+/// callback instead of calling coroutine_handle::resume() directly.
+/// This is critical for workflow determinism: FFI callbacks fire on Rust
+/// threads, but workflow coroutines must resume on the scheduler thread.
+using ResumeCallback = std::function<void(std::coroutine_handle<>)>;
 
 namespace detail {
 
@@ -24,6 +33,10 @@ class CompletionState {
 public:
     CompletionState() = default;
 
+    /// Construct with a resume callback for thread-safe resumption.
+    explicit CompletionState(ResumeCallback resume_cb)
+        : resume_callback_(std::move(resume_cb)) {}
+
     // Non-copyable, non-movable (shared via shared_ptr)
     CompletionState(const CompletionState&) = delete;
     CompletionState& operator=(const CompletionState&) = delete;
@@ -31,15 +44,21 @@ public:
     /// Try to set the result. Returns true if this was the first completion.
     bool try_set_result(T value) {
         std::coroutine_handle<> to_resume{nullptr};
+        ResumeCallback cb;
         {
             std::lock_guard lock(mutex_);
             if (completed_) return false;
             result_.emplace(std::move(value));
             completed_ = true;
             to_resume = std::exchange(waiter_, nullptr);
+            cb = resume_callback_;
         }
         if (to_resume) {
-            to_resume.resume();
+            if (cb) {
+                cb(to_resume);
+            } else {
+                to_resume.resume();
+            }
         }
         return true;
     }
@@ -47,15 +66,21 @@ public:
     /// Try to set an exception. Returns true if this was the first completion.
     bool try_set_exception(std::exception_ptr ex) {
         std::coroutine_handle<> to_resume{nullptr};
+        ResumeCallback cb;
         {
             std::lock_guard lock(mutex_);
             if (completed_) return false;
             exception_ = ex;
             completed_ = true;
             to_resume = std::exchange(waiter_, nullptr);
+            cb = resume_callback_;
         }
         if (to_resume) {
-            to_resume.resume();
+            if (cb) {
+                cb(to_resume);
+            } else {
+                to_resume.resume();
+            }
         }
         return true;
     }
@@ -93,6 +118,12 @@ public:
             // Already completed, don't suspend
             return false;
         }
+        // Only one waiter is supported. If waiter_ is already set, it means
+        // task() was called multiple times and both Tasks are being awaited.
+        // The first awaiter would be silently dropped (never resumed).
+        assert(!waiter_ &&
+               "CompletionState only supports a single waiter. "
+               "Do not call TaskCompletionSource::task() more than once.");
         waiter_ = caller;
         return true;
     }
@@ -112,6 +143,7 @@ private:
     std::optional<T> result_;
     std::exception_ptr exception_;
     bool completed_{false};
+    ResumeCallback resume_callback_;
 };
 
 /// Specialization for void.
@@ -120,34 +152,50 @@ class CompletionState<void> {
 public:
     CompletionState() = default;
 
+    /// Construct with a resume callback for thread-safe resumption.
+    explicit CompletionState(ResumeCallback resume_cb)
+        : resume_callback_(std::move(resume_cb)) {}
+
     CompletionState(const CompletionState&) = delete;
     CompletionState& operator=(const CompletionState&) = delete;
 
     bool try_set_result() {
         std::coroutine_handle<> to_resume{nullptr};
+        ResumeCallback cb;
         {
             std::lock_guard lock(mutex_);
             if (completed_) return false;
             completed_ = true;
             to_resume = std::exchange(waiter_, nullptr);
+            cb = resume_callback_;
         }
         if (to_resume) {
-            to_resume.resume();
+            if (cb) {
+                cb(to_resume);
+            } else {
+                to_resume.resume();
+            }
         }
         return true;
     }
 
     bool try_set_exception(std::exception_ptr ex) {
         std::coroutine_handle<> to_resume{nullptr};
+        ResumeCallback cb;
         {
             std::lock_guard lock(mutex_);
             if (completed_) return false;
             exception_ = ex;
             completed_ = true;
             to_resume = std::exchange(waiter_, nullptr);
+            cb = resume_callback_;
         }
         if (to_resume) {
-            to_resume.resume();
+            if (cb) {
+                cb(to_resume);
+            } else {
+                to_resume.resume();
+            }
         }
         return true;
     }
@@ -181,6 +229,10 @@ public:
         if (completed_) {
             return false;
         }
+        // Only one waiter is supported. See CompletionState<T> for details.
+        assert(!waiter_ &&
+               "CompletionState only supports a single waiter. "
+               "Do not call TaskCompletionSource::task() more than once.");
         waiter_ = caller;
         return true;
     }
@@ -196,6 +248,7 @@ private:
     std::coroutine_handle<> waiter_{nullptr};
     std::exception_ptr exception_;
     bool completed_{false};
+    ResumeCallback resume_callback_;
 };
 
 }  // namespace detail
@@ -210,16 +263,31 @@ private:
 ///   int value = co_await tcs.task();
 ///
 /// Thread-safe: set_result / set_exception can be called from any thread.
-/// The awaiting coroutine will be resumed from the thread that calls
-/// set_result/set_exception.
+/// By default, the awaiting coroutine is resumed on the thread that calls
+/// set_result/set_exception. When a ResumeCallback is provided, the resume
+/// is routed through the callback instead, allowing the coroutine to be
+/// scheduled back onto the correct thread (e.g., the workflow scheduler).
 template <typename T>
 class TaskCompletionSource {
 public:
     TaskCompletionSource()
         : state_(std::make_shared<detail::CompletionState<T>>()) {}
 
+    /// Construct with a resume callback for thread-safe resumption.
+    /// The callback will be invoked instead of calling resume() directly
+    /// when the result is set from any thread.
+    explicit TaskCompletionSource(ResumeCallback resume_cb)
+        : state_(std::make_shared<detail::CompletionState<T>>(
+              std::move(resume_cb))) {}
+
     /// Returns an awaitable Task that will complete when set_result or
     /// set_exception is called.
+    ///
+    /// WARNING: Must only be called ONCE. Unlike C# TaskCompletionSource.Task
+    /// (which returns the same Task), each call creates a new coroutine.
+    /// The underlying CompletionState only stores one waiter handle, so a
+    /// second call would overwrite the first waiter, leaving it hung forever.
+    /// A debug assert fires if this contract is violated.
     Task<T> task() {
         auto state = state_;
         co_return co_await Awaiter{state};
@@ -269,6 +337,15 @@ public:
     TaskCompletionSource()
         : state_(std::make_shared<detail::CompletionState<void>>()) {}
 
+    /// Construct with a resume callback for thread-safe resumption.
+    explicit TaskCompletionSource(ResumeCallback resume_cb)
+        : state_(std::make_shared<detail::CompletionState<void>>(
+              std::move(resume_cb))) {}
+
+    /// Returns an awaitable Task that completes when set_result or
+    /// set_exception is called.
+    ///
+    /// WARNING: Must only be called ONCE. See TaskCompletionSource<T>::task().
     Task<void> task() {
         auto state = state_;
         co_await Awaiter{state};

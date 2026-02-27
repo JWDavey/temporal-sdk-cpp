@@ -1,19 +1,53 @@
 
-# Build results
+# .NET build results
 bin/
 obj/
 /src/Temporalio/Bridge/target
 /tests/Temporalio.Tests/TestResults
 /tests/golangworker/golangworker
+Temporalio.sln.DotSettings.user
+
+# IDEs
 /.vs
 /.vscode
 /.idea
 /.zed
-Temporalio.sln.DotSettings.user
+*.suo
+*.user
+*.sln.docstates
 
-# C++ build artifacts
+# C++ build directories (CMake out-of-source builds)
+cpp/build*/
 /build/
 /out/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
 CMakeUserPresets.json
-*.vcxproj.user
 compile_commands.json
+_deps/
+
+# MSVC generated files
+*.vcxproj.user
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.dll
+*.exe
+*.exp
+*.iobj
+*.ipdb
+x64/
+x86/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+
+# OS files
+.DS_Store
+Thumbs.db

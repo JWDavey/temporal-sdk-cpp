@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "temporalio/bridge/byte_array.h"
+#include "temporalio/bridge/cancellation_token.h"
 #include "temporalio/bridge/interop.h"
 #include "temporalio/bridge/runtime.h"
 #include "temporalio/bridge/safe_handle.h"
@@ -78,6 +79,9 @@ struct RpcCallOptions {
     std::vector<std::pair<std::string, std::string>> metadata;
     std::vector<std::pair<std::string, std::vector<uint8_t>>> binary_metadata;
     uint32_t timeout_millis = 0;
+
+    /// Optional cancellation token. The token must outlive the RPC call.
+    CancellationToken* cancellation_token = nullptr;
 };
 
 /// Result of a successful RPC call.
@@ -148,8 +152,15 @@ public:
     /// Get the shared client handle (for Worker to hold a reference).
     const ClientHandle& shared_handle() const noexcept { return handle_; }
 
-    /// Get the associated runtime.
-    Runtime& runtime() const noexcept { return *runtime_; }
+    /// Get the shared runtime handle (keeps the Rust runtime alive).
+    const RuntimeHandle& shared_runtime_handle() const noexcept {
+        return runtime_handle_;
+    }
+
+    /// Get the raw runtime pointer (for byte_array_free etc.).
+    TemporalCoreRuntime* runtime_ptr() const noexcept {
+        return runtime_handle_.get();
+    }
 
     // Non-copyable but movable.
     Client(const Client&) = delete;
@@ -158,7 +169,7 @@ public:
     Client& operator=(Client&&) noexcept = default;
 
 private:
-    Runtime* runtime_;
+    RuntimeHandle runtime_handle_;
     ClientHandle handle_;
 };
 

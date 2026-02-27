@@ -4,6 +4,7 @@
 /// @brief TemporalClient - workflow CRUD, schedule management.
 
 #include <temporalio/async_/task.h>
+#include <temporalio/client/temporal_connection.h>
 #include <temporalio/client/workflow_handle.h>
 #include <temporalio/client/workflow_options.h>
 
@@ -11,6 +12,10 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace temporalio::bridge {
+class Client;
+} // namespace temporalio::bridge
 
 namespace temporalio::runtime {
 class TemporalRuntime;
@@ -87,6 +92,10 @@ public:
 
     /// Get the namespace this client uses.
     const std::string& ns() const noexcept;
+
+    /// Get the underlying bridge client, or nullptr if not connected.
+    /// Used internally by TemporalWorker to create a bridge worker.
+    bridge::Client* bridge_client() const noexcept;
 
     /// Start a workflow execution.
     async_::Task<WorkflowHandle> start_workflow(

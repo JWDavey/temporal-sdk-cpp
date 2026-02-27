@@ -12,6 +12,10 @@
 #include <utility>
 #include <vector>
 
+namespace temporalio::bridge {
+class Client;
+} // namespace temporalio::bridge
+
 namespace temporalio::runtime {
 class TemporalRuntime;
 } // namespace temporalio::runtime
@@ -135,6 +139,10 @@ public:
     const TemporalConnectionOptions& options() const noexcept {
         return options_;
     }
+
+    /// Get the underlying bridge client, or nullptr if not connected.
+    /// Used internally by TemporalWorker to create a bridge worker.
+    bridge::Client* bridge_client() const noexcept;
 
 private:
     explicit TemporalConnection(TemporalConnectionOptions options);

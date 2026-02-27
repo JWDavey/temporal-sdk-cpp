@@ -4,11 +4,18 @@
 /// @brief TemporalRuntime - holds Rust runtime handle and telemetry configuration.
 
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
+
+namespace temporalio::bridge {
+class Runtime;
+} // namespace temporalio::bridge
 
 namespace temporalio::common {
 class MetricMeter;
@@ -25,10 +32,33 @@ struct TelemetryFilterOptions {
     std::vector<std::string> additional_directives{};
 };
 
+/// Log level for forwarded log messages.
+enum class LogLevel : int {
+    kTrace = 0,
+    kDebug = 1,
+    kInfo = 2,
+    kWarn = 3,
+    kError = 4,
+};
+
+/// Callback type for receiving forwarded log messages from the Rust core.
+/// @param level The log level of the message.
+/// @param target The log target (e.g., "temporal_sdk_core::worker").
+/// @param message The log message text.
+/// @param timestamp_millis Unix timestamp in milliseconds.
+using LogCallback = std::function<void(LogLevel level,
+                                       std::string_view target,
+                                       std::string_view message,
+                                       uint64_t timestamp_millis)>;
+
 /// Log forwarding options.
 struct LogForwardingOptions {
     /// Log level for forwarding.
     std::string level{"WARN"};
+
+    /// Callback to receive forwarded log messages. If not set, forwarded
+    /// logs are written to stderr.
+    LogCallback callback;
 };
 
 /// Logging options for a runtime.
@@ -159,6 +189,9 @@ public:
 
     /// Get the options this runtime was created with.
     const TemporalRuntimeOptions& options() const noexcept { return options_; }
+
+    /// Get the internal bridge runtime. For internal SDK use only.
+    bridge::Runtime* bridge_runtime() const noexcept;
 
 private:
     struct Impl;

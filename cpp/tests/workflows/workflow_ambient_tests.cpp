@@ -1,12 +1,14 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <functional>
 #include <optional>
 #include <random>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
 
+#include "temporalio/async_/task.h"
 #include "temporalio/workflows/workflow.h"
 #include "temporalio/workflows/workflow_info.h"
 
@@ -66,7 +68,27 @@ public:
         deprecated_calls_.push_back(patch_id);
     }
 
+    temporalio::async_::Task<void> start_timer(
+        std::chrono::milliseconds /*duration*/,
+        std::stop_token /*ct*/) override {
+        start_timer_called_ = true;
+        co_return;
+    }
+
+    temporalio::async_::Task<bool> register_condition(
+        std::function<bool()> condition,
+        std::optional<std::chrono::milliseconds> /*timeout*/,
+        std::stop_token /*ct*/) override {
+        register_condition_called_ = true;
+        if (condition && condition()) {
+            co_return true;
+        }
+        co_return false;
+    }
+
     // Test helpers
+    bool start_timer_called_ = false;
+    bool register_condition_called_ = false;
     WorkflowInfo info_;
     std::stop_source cancel_source_;
     bool continue_as_new_suggested_ = false;

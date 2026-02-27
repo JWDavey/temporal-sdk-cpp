@@ -30,6 +30,66 @@ struct Payload {
     std::vector<uint8_t> data;
 };
 
+/// Represents a Temporal Failure — the wire format for exception information.
+/// This is a simplified C++ representation of the temporal.api.failure.v1.Failure
+/// protobuf message. When full proto types are integrated, this may become a
+/// thin wrapper around the generated type.
+struct Failure {
+    /// Human-readable error message.
+    std::string message;
+    /// The failure kind string — identifies which oneof variant this maps to.
+    /// Values: "ApplicationFailure", "CanceledFailure", "TerminatedFailure",
+    /// "TimeoutFailure", "ServerFailure", "ActivityFailure",
+    /// "ChildWorkflowFailure", "NexusOperationFailure", "NexusHandlerFailure",
+    /// or "Failure" (generic).
+    std::string failure_type;
+    /// For ApplicationFailure: the user-defined error type string (e.g.,
+    /// "MyCustomError"). Maps to ApplicationFailureInfo.type in protobuf.
+    /// Empty string if no custom error type was specified.
+    std::string error_type;
+    /// Stack trace string, if available.
+    std::string stack_trace;
+    /// Optional inner cause (recursive failure chain).
+    std::shared_ptr<Failure> cause;
+    /// Encoded attributes payload (used when encode_common_attributes is set).
+    std::optional<Payload> encoded_attributes;
+    /// Whether this failure is non-retryable.
+    bool non_retryable = false;
+    /// Application error category, if any.
+    std::string category;
+    /// Detail payloads for application/canceled failures.
+    std::vector<Payload> details;
+
+    /// Type-specific fields for ActivityFailure.
+    struct ActivityFailureInfo {
+        std::string activity_type;
+        std::string activity_id;
+        std::string identity;
+        int retry_state{0};
+    };
+    std::optional<ActivityFailureInfo> activity_failure_info;
+
+    /// Type-specific fields for ChildWorkflowFailure.
+    struct ChildWorkflowFailureInfo {
+        std::string ns;
+        std::string workflow_id;
+        std::string run_id;
+        std::string workflow_type;
+        int retry_state{0};
+    };
+    std::optional<ChildWorkflowFailureInfo> child_workflow_failure_info;
+
+    /// Type-specific fields for NexusOperationFailure.
+    struct NexusOperationFailureInfo {
+        std::string endpoint;
+        std::string service;
+        std::string operation;
+        std::string operation_token;
+        int64_t scheduled_event_id{0};
+    };
+    std::optional<NexusOperationFailureInfo> nexus_operation_failure_info;
+};
+
 /// Represents a raw, unconverted payload value.
 class RawValue {
 public:
@@ -89,21 +149,19 @@ public:
     }
 };
 
-/// Interface for converting exceptions to/from Temporal failure
+/// Interface for converting exceptions to/from Temporal Failure
 /// representations. Deterministic, synchronous -- used in workflows.
 class IFailureConverter {
 public:
     virtual ~IFailureConverter() = default;
 
-    /// Convert exception to a failure payload.
-    /// The Payload here represents the serialized Failure proto. When proto
-    /// types are integrated, this will use the actual Failure message type.
-    virtual Payload to_failure(std::exception_ptr exception,
+    /// Convert an exception to a Failure struct.
+    virtual Failure to_failure(std::exception_ptr exception,
                                const IPayloadConverter& converter) const = 0;
 
-    /// Convert a failure payload to an exception.
+    /// Convert a Failure struct to an exception.
     virtual std::exception_ptr to_exception(
-        const Payload& failure,
+        const Failure& failure,
         const IPayloadConverter& converter) const = 0;
 };
 
@@ -127,7 +185,8 @@ public:
 class DefaultPayloadConverter : public IPayloadConverter {
 public:
     /// Constructs with the standard encoding converter set:
-    /// BinaryNull, BinaryPlain, JsonProto, BinaryProto, JsonPlain.
+    /// BinaryNull, BinaryPlain, JsonPlain.
+    /// (JsonProto and BinaryProto added when proto support is integrated.)
     DefaultPayloadConverter();
 
     /// Constructs with a custom set of encoding converters.
@@ -157,16 +216,17 @@ struct DefaultFailureConverterOptions {
 };
 
 /// Default failure converter implementation.
+/// Maps the full C++ exception hierarchy to/from Failure structs.
 class DefaultFailureConverter : public IFailureConverter {
 public:
     DefaultFailureConverter();
     explicit DefaultFailureConverter(DefaultFailureConverterOptions options);
 
-    Payload to_failure(std::exception_ptr exception,
+    Failure to_failure(std::exception_ptr exception,
                        const IPayloadConverter& converter) const override;
 
     std::exception_ptr to_exception(
-        const Payload& failure,
+        const Failure& failure,
         const IPayloadConverter& converter) const override;
 
     const DefaultFailureConverterOptions& options() const noexcept {
@@ -210,6 +270,10 @@ public:
 
 /// Handles JSON serialization with "json/plain" encoding.
 /// Uses nlohmann/json internally.
+///
+/// Built-in types: std::string, bool, int, int64_t, uint64_t, float, double,
+/// and nlohmann::json. Custom types can be registered with register_type()
+/// or by providing nlohmann/json ADL to_json/from_json hooks.
 class JsonPlainConverter : public IEncodingConverter {
 public:
     std::string_view encoding() const override;

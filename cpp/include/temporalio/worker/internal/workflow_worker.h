@@ -3,13 +3,24 @@
 /// @file workflow_worker.h
 /// @brief Internal workflow task poller and dispatcher.
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <temporalio/async_/task.h>
+#include <temporalio/async_/task_completion_source.h>
 #include <temporalio/worker/workflow_instance.h>
 #include <temporalio/workflows/workflow_definition.h>
+
+namespace coresdk::workflow_activation {
+class InitializeWorkflow;
+}
+
+namespace temporalio::bridge {
+class Worker;
+}
 
 namespace temporalio::converters {
 struct DataConverter;
@@ -23,6 +34,9 @@ namespace temporalio::worker::internal {
 
 /// Configuration for the internal WorkflowWorker.
 struct WorkflowWorkerOptions {
+    /// Bridge worker for FFI calls.
+    bridge::Worker* bridge_worker{nullptr};
+
     /// Task queue being polled.
     std::string task_queue;
 
@@ -66,11 +80,41 @@ public:
     async_::Task<void> execute_async();
 
 private:
+    /// Handle a single workflow activation (poll result).
+    /// Looks up or creates the WorkflowInstance, dispatches, and sends
+    /// the completion to the bridge.
+    async_::Task<void> handle_activation(
+        const std::vector<uint8_t>& activation_bytes);
+
+    /// Handle a cache eviction job and send the completion.
+    async_::Task<void> handle_cache_eviction(const std::string& run_id,
+                                              const std::string& message);
+
+    /// Create a new workflow instance for the given workflow type (basic).
+    std::unique_ptr<WorkflowInstance> create_instance(
+        const std::string& workflow_type, const std::string& run_id);
+
+    /// Create a new workflow instance with full info from InitializeWorkflow.
+    std::unique_ptr<WorkflowInstance> create_instance(
+        const std::string& workflow_type, const std::string& run_id,
+        const coresdk::workflow_activation::InitializeWorkflow& init);
+
+    /// Poll the bridge for a workflow activation and return the result.
+    /// Returns nullopt on shutdown (no error, no data).
+    async_::Task<std::optional<std::vector<uint8_t>>> poll_activation();
+
+    /// Complete a workflow activation via the bridge.
+    async_::Task<void> complete_activation(
+        const std::vector<uint8_t>& completion_bytes);
+
     WorkflowWorkerOptions options_;
 
     /// Running workflow instances keyed by run ID.
     std::unordered_map<std::string, std::unique_ptr<WorkflowInstance>>
         running_workflows_;
+
+    /// Deadlock timeout for workflow activations.
+    std::chrono::seconds deadlock_timeout_{2};
 };
 
 }  // namespace temporalio::worker::internal

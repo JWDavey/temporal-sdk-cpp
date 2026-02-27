@@ -696,9 +696,9 @@ TEST(WorkflowInstanceTest, QueryReturnsRespondQueryCommand) {
 
     auto [inst, _] = create_started_instance(def);
 
-    auto query_data = std::make_pair(
-        std::string("get_status"),
-        std::vector<std::any>{});
+    WorkflowInstance::QueryWorkflowData query_data;
+    query_data.query_id = "q-42";
+    query_data.query_name = "get_status";
 
     std::vector<WorkflowInstance::Job> query_jobs = {
         {.type = WorkflowInstance::JobType::kQueryWorkflow,
@@ -707,11 +707,16 @@ TEST(WorkflowInstanceTest, QueryReturnsRespondQueryCommand) {
 
     auto commands = inst->activate(query_jobs);
 
-    // Should have a kRespondQuery command
+    // Should have a kRespondQuery command with QueryResponseData
     bool found_query_response = false;
     for (const auto& cmd : commands) {
         if (cmd.type == WorkflowInstance::CommandType::kRespondQuery) {
             found_query_response = true;
+            auto& resp =
+                std::any_cast<const WorkflowInstance::QueryResponseData&>(
+                    cmd.data);
+            EXPECT_EQ(resp.query_id, "q-42");
+            EXPECT_TRUE(resp.error.empty());
         }
     }
     EXPECT_TRUE(found_query_response);
@@ -727,9 +732,9 @@ TEST(WorkflowInstanceTest, QueryOnlyActivationSkipsConditionCheck) {
 
     auto [inst, _] = create_started_instance(def);
 
-    auto query_data = std::make_pair(
-        std::string("get_status"),
-        std::vector<std::any>{});
+    WorkflowInstance::QueryWorkflowData query_data;
+    query_data.query_id = "q-cond";
+    query_data.query_name = "get_status";
 
     std::vector<WorkflowInstance::Job> query_jobs = {
         {.type = WorkflowInstance::JobType::kQueryWorkflow,
@@ -740,16 +745,16 @@ TEST(WorkflowInstanceTest, QueryOnlyActivationSkipsConditionCheck) {
     EXPECT_NO_THROW(inst->activate(query_jobs));
 }
 
-TEST(WorkflowInstanceTest, UnknownQueryProducesNoCommand) {
+TEST(WorkflowInstanceTest, UnknownQueryProducesFailedResponse) {
     auto def = WorkflowDefinition::create<SimpleWorkflow>("SimpleWorkflow")
                    .run(&SimpleWorkflow::run)
                    .build();
 
     auto [inst, _] = create_started_instance(def);
 
-    auto query_data = std::make_pair(
-        std::string("nonexistent_query"),
-        std::vector<std::any>{});
+    WorkflowInstance::QueryWorkflowData query_data;
+    query_data.query_id = "q-1";
+    query_data.query_name = "nonexistent_query";
 
     std::vector<WorkflowInstance::Job> query_jobs = {
         {.type = WorkflowInstance::JobType::kQueryWorkflow,
@@ -758,14 +763,19 @@ TEST(WorkflowInstanceTest, UnknownQueryProducesNoCommand) {
 
     auto commands = inst->activate(query_jobs);
 
-    // No registered handler and no dynamic query -> no response command
-    bool found_query_response = false;
+    // No registered handler and no dynamic query -> kRespondQueryFailed
+    bool found_query_failed = false;
     for (const auto& cmd : commands) {
-        if (cmd.type == WorkflowInstance::CommandType::kRespondQuery) {
-            found_query_response = true;
+        if (cmd.type == WorkflowInstance::CommandType::kRespondQueryFailed) {
+            found_query_failed = true;
+            auto& resp =
+                std::any_cast<const WorkflowInstance::QueryResponseData&>(
+                    cmd.data);
+            EXPECT_EQ(resp.query_id, "q-1");
+            EXPECT_FALSE(resp.error.empty());
         }
     }
-    EXPECT_FALSE(found_query_response);
+    EXPECT_TRUE(found_query_failed);
 }
 
 // ===========================================================================
@@ -932,9 +942,9 @@ TEST(WorkflowInstanceTest, SignalAndQueryInOneActivation) {
     auto sig = std::make_pair(
         std::string("on_signal"),
         std::vector<std::any>{std::any(std::string("updated"))});
-    auto qry = std::make_pair(
-        std::string("get_status"),
-        std::vector<std::any>{});
+    WorkflowInstance::QueryWorkflowData qry;
+    qry.query_id = "q-sig";
+    qry.query_name = "get_status";
 
     std::vector<WorkflowInstance::Job> jobs = {
         {.type = WorkflowInstance::JobType::kSignalWorkflow, .data = sig},

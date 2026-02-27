@@ -101,7 +101,7 @@ struct TemporalCoreByteArray {
     const uint8_t* data;
     size_t size;
     size_t cap;
-    uint8_t disable_free;
+    bool disable_free;
 };
 
 // ── Client option structs ────────────────────────────────────────────────────
@@ -172,7 +172,7 @@ struct TemporalCoreRpcCallOptions {
     TemporalCoreRpcService service;
     TemporalCoreByteArrayRef rpc;
     TemporalCoreByteArrayRef req;
-    uint8_t retry;  // bool
+    bool retry;
     TemporalCoreByteArrayRefArray metadata;         // TemporalCoreMetadataRef
     TemporalCoreByteArrayRefArray binary_metadata;  // TemporalCoreMetadataRef
     uint32_t timeout_millis;
@@ -196,7 +196,7 @@ struct TemporalCoreClientEnvConfigOrFail {
 struct TemporalCoreClientEnvConfigLoadOptions {
     TemporalCoreByteArrayRef path;
     TemporalCoreByteArrayRef data;
-    uint8_t config_file_strict;  // bool
+    bool config_file_strict;
     TemporalCoreByteArrayRef env_vars;
 };
 
@@ -209,9 +209,9 @@ struct TemporalCoreClientEnvConfigProfileLoadOptions {
     TemporalCoreByteArrayRef profile;
     TemporalCoreByteArrayRef path;
     TemporalCoreByteArrayRef data;
-    uint8_t disable_file;  // bool
-    uint8_t disable_env;   // bool
-    uint8_t config_file_strict;  // bool
+    bool disable_file;
+    bool disable_env;
+    bool config_file_strict;
     TemporalCoreByteArrayRef env_vars;
 };
 
@@ -221,7 +221,7 @@ union TemporalCoreMetricAttributeValue {
     TemporalCoreByteArrayRef string_value;
     int64_t int_value;
     double float_value;
-    uint8_t bool_value;  // bool
+    bool bool_value;
 };
 
 struct TemporalCoreMetricAttribute {
@@ -266,7 +266,7 @@ union TemporalCoreCustomMetricAttributeValue {
     TemporalCoreCustomMetricAttributeValueString string_value;
     int64_t int_value;
     double float_value;
-    uint8_t bool_value;  // bool
+    bool bool_value;
 };
 
 struct TemporalCoreCustomMetricAttribute {
@@ -315,16 +315,16 @@ struct TemporalCoreOpenTelemetryOptions {
     TemporalCoreByteArrayRef headers;  // TemporalCoreNewlineDelimitedMapRef
     uint32_t metric_periodicity_millis;
     TemporalCoreOpenTelemetryMetricTemporality metric_temporality;
-    uint8_t durations_as_seconds;  // bool
+    bool durations_as_seconds;
     TemporalCoreOpenTelemetryProtocol protocol;
     TemporalCoreByteArrayRef histogram_bucket_overrides;  // TemporalCoreNewlineDelimitedMapRef
 };
 
 struct TemporalCorePrometheusOptions {
     TemporalCoreByteArrayRef bind_address;
-    uint8_t counters_total_suffix;   // bool
-    uint8_t unit_suffix;             // bool
-    uint8_t durations_as_seconds;    // bool
+    bool counters_total_suffix;
+    bool unit_suffix;
+    bool durations_as_seconds;
     TemporalCoreByteArrayRef histogram_bucket_overrides;  // TemporalCoreNewlineDelimitedMapRef
 };
 
@@ -332,7 +332,7 @@ struct TemporalCoreMetricsOptions {
     const TemporalCoreOpenTelemetryOptions* opentelemetry;
     const TemporalCorePrometheusOptions* prometheus;
     const TemporalCoreCustomMetricMeter* custom_meter;
-    uint8_t attach_service_name;  // bool
+    bool attach_service_name;
     TemporalCoreByteArrayRef global_tags;   // TemporalCoreNewlineDelimitedMapRef
     TemporalCoreByteArrayRef metric_prefix;
 };
@@ -370,7 +370,7 @@ struct TemporalCoreDevServerOptions {
     TemporalCoreByteArrayRef namespace_;
     TemporalCoreByteArrayRef ip;
     TemporalCoreByteArrayRef database_filename;
-    uint8_t ui;  // bool
+    bool ui;
     uint16_t ui_port;
     TemporalCoreByteArrayRef log_format;
     TemporalCoreByteArrayRef log_level;
@@ -404,7 +404,7 @@ struct TemporalCoreWorkerDeploymentVersion {
 
 struct TemporalCoreWorkerDeploymentOptions {
     TemporalCoreWorkerDeploymentVersion version;
-    uint8_t use_worker_versioning;  // bool
+    bool use_worker_versioning;
     int32_t default_versioning_behavior;
 };
 
@@ -450,7 +450,7 @@ struct TemporalCoreSlotReserveCtx {
     TemporalCoreByteArrayRef task_queue;
     TemporalCoreByteArrayRef worker_identity;
     TemporalCoreByteArrayRef worker_build_id;
-    uint8_t is_sticky;  // bool
+    bool is_sticky;
 };
 
 using TemporalCoreCustomSlotSupplierReserveCallback = void (*)(
@@ -475,7 +475,7 @@ enum class TemporalCoreSlotInfo_Tag : int32_t {
 
 struct TemporalCoreWorkflowSlotInfo_Body {
     TemporalCoreByteArrayRef workflow_type;
-    uint8_t is_sticky;  // bool
+    bool is_sticky;
 };
 
 struct TemporalCoreActivitySlotInfo_Body {
@@ -563,10 +563,10 @@ struct TemporalCoreTunerHolder {
 };
 
 struct TemporalCoreWorkerTaskTypes {
-    uint8_t enable_workflows;          // bool
-    uint8_t enable_local_activities;   // bool
-    uint8_t enable_remote_activities;  // bool
-    uint8_t enable_nexus;              // bool
+    bool enable_workflows;
+    bool enable_local_activities;
+    bool enable_remote_activities;
+    bool enable_nexus;
 };
 
 struct TemporalCorePollerBehaviorSimpleMaximum {
@@ -602,7 +602,7 @@ struct TemporalCoreWorkerOptions {
     float nonsticky_to_sticky_poll_ratio;
     TemporalCorePollerBehavior activity_task_poller_behavior;
     TemporalCorePollerBehavior nexus_task_poller_behavior;
-    uint8_t nondeterminism_as_workflow_fail;  // bool
+    bool nondeterminism_as_workflow_fail;
     TemporalCoreByteArrayRefArray nondeterminism_as_workflow_fail_for_types;
     TemporalCoreByteArrayRefArray plugins;
 };
@@ -735,12 +735,12 @@ int32_t temporal_core_random_int32_range(
     TemporalCoreRandom* random,
     int32_t min,
     int32_t max,
-    uint8_t max_inclusive);
+    bool max_inclusive);
 double temporal_core_random_double_range(
     TemporalCoreRandom* random,
     double min,
     double max,
-    uint8_t max_inclusive);
+    bool max_inclusive);
 void temporal_core_random_fill_bytes(
     TemporalCoreRandom* random,
     TemporalCoreByteArrayRef bytes);
