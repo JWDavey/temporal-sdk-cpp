@@ -10,7 +10,26 @@
       "Bash(echo EXIT:$?:*)",
       "Bash(sort:*)",
       "Bash(git status:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(cmake:*)",
+      "Bash(\"$CMAKE\":*)",
+      "Bash(git submodule:*)",
+      "Bash(rm:*)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\":*)",
+      "Bash(echo:*)",
+      "Bash(where cmake:*)",
+      "Bash(\"$CMAKEBIN\" ..:*)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" ..:*)",
+      "Bash(cmd:*)",
+      "Bash(export:*)",
+      "Bash(\"/c/Program Files/CMake/bin/cmake.exe\":*)",
+      "Bash(taskkill:*)",
+      "Bash(cmd.exe:*)",
+      "Bash(\"$CMAKE_EXE\":*)",
+      "Bash('/c/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe':*)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe\":*)"
     ]
   }
 }
