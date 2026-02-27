@@ -41,7 +41,7 @@ TEST(TemporalWorkerOptionsTest, DefaultValues) {
     EXPECT_EQ(opts.max_concurrent_workflow_tasks, 100u);
     EXPECT_EQ(opts.max_concurrent_activities, 100u);
     EXPECT_EQ(opts.max_concurrent_local_activities, 100u);
-    EXPECT_TRUE(opts.enable_eager_activity_dispatch);
+    EXPECT_FALSE(opts.disable_eager_activity_dispatch);
     EXPECT_TRUE(opts.build_id.empty());
     EXPECT_TRUE(opts.identity.empty());
 }
@@ -56,7 +56,7 @@ TEST(TemporalWorkerOptionsTest, CustomValues) {
         .max_concurrent_workflow_tasks = 50,
         .max_concurrent_activities = 25,
         .max_concurrent_local_activities = 10,
-        .enable_eager_activity_dispatch = false,
+        .disable_eager_activity_dispatch = true,
         .build_id = "v1.0.0",
         .identity = "worker-1",
     };
@@ -64,7 +64,7 @@ TEST(TemporalWorkerOptionsTest, CustomValues) {
     EXPECT_EQ(opts.max_concurrent_workflow_tasks, 50u);
     EXPECT_EQ(opts.max_concurrent_activities, 25u);
     EXPECT_EQ(opts.max_concurrent_local_activities, 10u);
-    EXPECT_FALSE(opts.enable_eager_activity_dispatch);
+    EXPECT_TRUE(opts.disable_eager_activity_dispatch);
     EXPECT_EQ(opts.build_id, "v1.0.0");
     EXPECT_EQ(opts.identity, "worker-1");
 }

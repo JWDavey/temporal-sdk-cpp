@@ -26,6 +26,14 @@ file(GLOB_RECURSE TEMPORALIO_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
 )
 
+# Exclude extension test files if extensions are not being built
+if(NOT TARGET temporalio_opentelemetry)
+    list(FILTER TEMPORALIO_TEST_SOURCES EXCLUDE REGEX ".*/extensions/opentelemetry/.*")
+endif()
+if(NOT TARGET temporalio_diagnostics)
+    list(FILTER TEMPORALIO_TEST_SOURCES EXCLUDE REGEX ".*/extensions/diagnostics/.*")
+endif()
+
 if(NOT TEMPORALIO_TEST_SOURCES)
     message(STATUS "Temporalio: No test sources found yet, creating placeholder target")
     # Create a minimal test main so the target always exists

@@ -9,6 +9,7 @@
 
 // Include the interop types (struct definitions only, no FFI calls needed)
 #include "temporalio/bridge/interop.h"
+#include "temporalio/bridge/byte_array.h"
 #include "temporalio/bridge/call_scope.h"
 
 using namespace temporalio::bridge;

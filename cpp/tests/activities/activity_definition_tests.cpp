@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "temporalio/activities/activity.h"
+#include "temporalio/activities/activity_context.h"
 #include "temporalio/async_/task.h"
 
 using namespace temporalio::activities;
