@@ -3,7 +3,14 @@
     "allow": [
       "Bash(find:*)",
       "Bash(grep:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(test:*)",
+      "Bash(cp:*)",
+      "Bash(echo EXIT:$?:*)",
+      "Bash(sort:*)",
+      "Bash(git status:*)",
+      "Bash(git add:*)"
     ]
   }
 }

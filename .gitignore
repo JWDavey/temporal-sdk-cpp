@@ -10,3 +10,10 @@ obj/
 /.idea
 /.zed
 Temporalio.sln.DotSettings.user
+
+# C++ build artifacts
+/build/
+/out/
+CMakeUserPresets.json
+*.vcxproj.user
+compile_commands.json

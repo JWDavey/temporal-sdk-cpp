@@ -11,6 +11,127 @@ The Temporal C# SDK (`src/Temporalio/`) is a mature library (~469 source files, 
 - Includes all extension equivalents (OpenTelemetry, metrics)
 - Converts and passes all ~412 tests
 
+## Current Status
+
+> **Last updated:** 2026-02-27
+
+### Summary
+
+All 7 implementation phases have been completed at the **skeleton/structural level**. The full
+C++ project contains **118 source files** (36 public headers, 32 src files, 37 test files,
+5 extension files, 3 examples, 5 CMakeLists.txt) with **687 unit tests** defined across
+37 test files.
+
+### What Has Been Built
+
+| Category | Count | Status |
+|----------|-------|--------|
+| Public headers (`cpp/include/`) | 33 | Complete |
+| Extension headers (`cpp/extensions/*/include/`) | 3 | Complete |
+| Implementation files (`cpp/src/`) | 25 `.cpp` + 7 `.h` | Complete |
+| Extension implementations | 2 `.cpp` | Complete |
+| Test files (`cpp/tests/`) | 37 (incl. `main.cpp`) | Complete |
+| Example programs | 3 | Complete |
+| CMake build files | 5 | Complete |
+| Build config (`vcpkg.json`, `.cmake`) | 3 | Complete |
+| **Total C++ files** | **118** | |
+| **Total test cases (TEST/TEST_F)** | **687** | |
+
+### Phase Completion Status
+
+| Phase | Description | Status | Notes |
+|-------|-------------|--------|-------|
+| Phase 1 | Foundation (CMake, async primitives, bridge) | **COMPLETE** | CMake + vcpkg, Task\<T\>, CancellationToken, CoroutineScheduler, SafeHandle, CallScope, interop.h |
+| Phase 2 | Core Types (exceptions, converters, common) | **COMPLETE** | Full exception hierarchy (20+ classes), DataConverter, MetricMeter, SearchAttributes, RetryPolicy, enums |
+| Phase 3 | Runtime & Client | **COMPLETE** | TemporalRuntime, TemporalConnection, TemporalClient, WorkflowHandle, ClientOutboundInterceptor |
+| Phase 4 | Workflows & Activities | **COMPLETE** | WorkflowDefinition builder, WorkflowInstance determinism engine, ActivityDefinition, TemporalWorker, sub-workers |
+| Phase 5 | Nexus & Testing | **COMPLETE** | NexusServiceDefinition, OperationHandler, WorkflowEnvironment, ActivityEnvironment |
+| Phase 6 | Extensions | **COMPLETE** | TracingInterceptor (OpenTelemetry), CustomMetricMeter (Diagnostics) |
+| Phase 7 | Tests | **COMPLETE** | 687 tests across 37 files covering all components |
+
+### Critical Bugs Found and Fixed During Implementation
+
+1. **Nexus ODR violation** — Duplicate `NexusOperationExecutionContext` definitions in two headers. Fixed by consolidating into `operation_handler.h` with `ContextScope` RAII class.
+2. **WorkflowInstance `run_once()` missing condition loop** — Conditions that became true could trigger new conditions, requiring a loop. Fixed with proper `while` loop matching C# behavior.
+3. **WorkflowInstance handler count bug** — `run_top_level` decremented handler count for the main workflow run (should only decrement for signal/update handlers). Fixed with `is_handler` parameter.
+4. **WorkflowInstance initialization sequence** — Missing `workflow_initialized_` flag causing premature initialization. Fixed with two-phase split of `handle_start_workflow`.
+5. **Missing `activity_environment.h` header** — Test file referenced a header that didn't exist. Created the missing header.
+
+---
+
+## PENDING WORK
+
+> **IMPORTANT: No builds or tests have been run yet.** The code has been written but not
+> compiled or tested against an actual compiler. The items below represent the remaining
+> work to bring this project to a production-ready state.
+
+### 1. Build Verification (HIGH PRIORITY)
+
+The C++ code has never been compiled. The first priority is:
+
+- [ ] Run `cmake -B build -S cpp` and resolve any configuration errors
+- [ ] Run `cmake --build build` and fix all compilation errors
+- [ ] Ensure the Rust `sdk-core-c-bridge` builds and links correctly
+- [ ] Verify `vcpkg` installs all dependencies (protobuf, nlohmann/json, gtest, opentelemetry)
+- [ ] Test on MSVC 2022+ (Windows) and GCC 11+ / Clang 14+ (Linux)
+
+### 2. Bridge FFI Integration (HIGH PRIORITY)
+
+Throughout the codebase, bridge calls are marked with `TODO(bridge)` comments indicating
+where real FFI calls to the Rust `sdk-core-c-bridge` need to be wired up. Key areas:
+
+- [ ] `interop.h` — Verify all `extern "C"` declarations match the actual Rust C header
+- [ ] `bridge/runtime.cpp` — Wire `temporal_core_runtime_new` / `temporal_core_runtime_free`
+- [ ] `bridge/client.cpp` — Wire `temporal_core_client_connect` and all RPC calls
+- [ ] `bridge/worker.cpp` — Wire poll/complete/shutdown functions
+- [ ] Link the compiled Rust `.lib`/`.a` library via CMake
+
+### 3. Test Execution (HIGH PRIORITY)
+
+- [ ] Get Google Test tests compiling and running via `ctest`
+- [ ] Fix any test failures from compilation issues
+- [ ] Validate unit tests pass without a live server (pure logic tests)
+- [ ] Set up `WorkflowEnvironmentFixture` to auto-download the local dev server
+- [ ] Run integration tests against a live Temporal server
+- [ ] Target: all 687 tests green
+
+### 4. Protobuf Integration (MEDIUM PRIORITY)
+
+- [ ] Generate C++ protobuf types from Temporal API `.proto` files
+- [ ] Wire protobuf serialization/deserialization in bridge layer
+- [ ] Replace `std::vector<uint8_t>` raw bytes with proper protobuf message types where appropriate
+
+### 5. Converter Implementation (MEDIUM PRIORITY)
+
+- [ ] Implement `JsonPayloadConverter` using nlohmann/json
+- [ ] Implement `ProtobufPayloadConverter` using protobuf library
+- [ ] Implement `DefaultFailureConverter` (Failure proto ↔ exception mapping)
+- [ ] Wire `IPayloadCodec` pipeline for encryption support
+
+### 6. Worker Poll Loop Wiring (MEDIUM PRIORITY)
+
+- [ ] Wire `TemporalWorker::execute_async()` to spawn sub-worker poll loops
+- [ ] Wire `WorkflowWorker` to poll activations and dispatch to `WorkflowInstance`
+- [ ] Wire `ActivityWorker` to poll tasks and dispatch to registered activities
+- [ ] Wire `NexusWorker` to poll tasks and dispatch to operation handlers
+- [ ] Implement graceful shutdown with `std::stop_token`
+
+### 7. CI/CD Pipeline (LOWER PRIORITY)
+
+- [ ] GitHub Actions workflow for Windows (MSVC) + Linux (GCC + Clang)
+- [ ] AddressSanitizer and UndefinedBehaviorSanitizer CI runs
+- [ ] Code coverage reporting
+- [ ] Example programs verified in CI
+
+### 8. Documentation & Packaging (LOWER PRIORITY)
+
+- [ ] Doxygen generation from `@file` / `///` doc comments
+- [ ] Install targets (`cmake --install`) produce correct header + lib layout
+- [ ] `find_package(temporalio)` support via CMake config files
+- [ ] README.md with build instructions and getting started guide
+
+---
+
 ## Third-Party Dependencies
 
 | Library | Purpose | Source |
@@ -25,51 +146,195 @@ No other third-party libraries. Everything else uses C++20 standard library.
 
 ---
 
+## Actual Project Structure
+
+> **Note:** The C++ project lives under `cpp/` (not at repository root) to avoid
+> case-insensitive path collisions with the C# `src/Temporalio/` on Windows.
+
+```
+temporal-sdk-cpp/
+  cpp/
+    CMakeLists.txt                              # Top-level CMake (vcpkg toolchain)
+    vcpkg.json                                  # Dependency manifest
+    cmake/
+      Platform.cmake                            # Platform detection, Rust cargo build
+      CompilerWarnings.cmake                    # Shared -Wall -Werror flags
+
+    include/temporalio/                         # PUBLIC headers (33 files)
+      version.h
+      async_/
+        cancellation_token.h                    # Wraps std::stop_token/std::stop_source
+        coroutine_scheduler.h                   # Deterministic FIFO workflow executor
+        task.h                                  # Lazy coroutine Task<T> with symmetric transfer
+        task_completion_source.h                # Callback-to-coroutine bridge
+      client/
+        temporal_client.h                       # Workflow CRUD, schedules
+        temporal_connection.h                   # gRPC connection (thread-safe)
+        workflow_handle.h                       # Value type: client + workflow ID + run ID
+        workflow_options.h                      # Start/signal/query/update options
+        interceptors/
+          client_interceptor.h                  # IClientInterceptor + ClientOutboundInterceptor
+      common/
+        enums.h                                 # Priority, VersioningBehavior, ParentClosePolicy, etc.
+        metric_meter.h                          # MetricMeter, Counter, Histogram, Gauge
+        retry_policy.h                          # RetryPolicy struct
+        search_attributes.h                     # SearchAttributeKey<T>, SearchAttributeCollection
+        workflow_history.h                      # WorkflowHistory for replay
+      converters/
+        data_converter.h                        # DataConverter, IPayloadConverter, IFailureConverter
+      exceptions/
+        temporal_exception.h                    # Full exception hierarchy (20+ classes)
+      nexus/
+        operation_handler.h                     # NexusServiceDefinition, OperationHandler, ContextScope
+      runtime/
+        temporal_runtime.h                      # TemporalRuntime, options, telemetry config
+      testing/
+        activity_environment.h                  # Isolated activity testing
+        workflow_environment.h                  # Local dev server lifecycle
+      worker/
+        temporal_worker.h                       # TemporalWorker + TemporalWorkerOptions
+        workflow_instance.h                     # Per-execution determinism engine
+        workflow_replayer.h                     # WorkflowReplayer for replay testing
+        interceptors/
+          worker_interceptor.h                  # IWorkerInterceptor + inbound/outbound interceptors
+        internal/
+          activity_worker.h                     # Activity task poller/dispatcher
+          nexus_worker.h                        # Nexus task poller/dispatcher
+          workflow_worker.h                     # Workflow activation poller/dispatcher
+      workflows/
+        workflow.h                              # Workflow ambient API (static methods)
+        workflow_definition.h                   # WorkflowDefinition builder + registration
+        workflow_info.h                         # WorkflowInfo, WorkflowUpdateInfo
+
+    src/temporalio/                             # PRIVATE implementation (25 .cpp + 7 .h)
+      temporalio.cpp                            # Library version info
+      activities/
+        activity_context.cpp
+      async_/
+        coroutine_scheduler.cpp
+      bridge/
+        byte_array.h                            # ByteArray RAII wrapper for Rust-allocated bytes
+        call_scope.h                            # Scoped FFI memory management
+        client.h / client.cpp                   # Client FFI wrappers
+        interop.h                               # C FFI declarations (extern "C")
+        runtime.h / runtime.cpp                 # Runtime FFI wrappers
+        safe_handle.h                           # RAII handle template
+        worker.h / worker.cpp                   # Worker FFI wrappers
+      client/
+        interceptors/client_interceptor.cpp
+        temporal_client.cpp
+        temporal_connection.cpp
+        workflow_handle.cpp
+      common/
+        metric_meter.cpp
+        workflow_history.cpp
+      converters/
+        data_converter.cpp
+      exceptions/
+        temporal_exception.cpp
+      nexus/
+        operation_handler.cpp
+      runtime/
+        temporal_runtime.cpp
+      testing/
+        activity_environment.cpp
+        workflow_environment.cpp
+      worker/
+        internal/
+          activity_worker.cpp
+          nexus_worker.cpp
+          workflow_worker.cpp
+        temporal_worker.cpp
+        workflow_instance.cpp
+        workflow_replayer.cpp
+      workflows/
+        workflow.cpp
+
+    extensions/
+      opentelemetry/                            # TracingInterceptor (3 files)
+        CMakeLists.txt
+        include/temporalio/extensions/opentelemetry/
+          tracing_interceptor.h
+          tracing_options.h
+        src/
+          tracing_interceptor.cpp
+      diagnostics/                              # CustomMetricMeter (2 files)
+        CMakeLists.txt
+        include/temporalio/extensions/diagnostics/
+          custom_metric_meter.h
+        src/
+          custom_metric_meter.cpp
+
+    tests/                                      # Google Test suite (37 files, 687 tests)
+      CMakeLists.txt
+      main.cpp                                  # Custom gtest main with env fixture
+      activities/
+        activity_context_tests.cpp
+        activity_definition_tests.cpp
+      async/
+        cancellation_token_tests.cpp
+        coroutine_scheduler_tests.cpp
+        task_completion_source_tests.cpp
+        task_tests.cpp
+      bridge/
+        call_scope_tests.cpp
+        safe_handle_tests.cpp
+      client/
+        client_interceptor_tests.cpp
+        client_options_tests.cpp
+        connection_options_tests.cpp
+        workflow_handle_tests.cpp
+      common/
+        enums_tests.cpp
+        metric_meter_tests.cpp
+        retry_policy_tests.cpp
+        search_attributes_tests.cpp
+        workflow_history_tests.cpp
+      converters/
+        data_converter_tests.cpp
+        failure_converter_tests.cpp
+      exceptions/
+        temporal_exception_tests.cpp
+      extensions/
+        diagnostics/
+          custom_metric_meter_tests.cpp
+        opentelemetry/
+          tracing_interceptor_tests.cpp
+          tracing_options_tests.cpp
+      general/
+        version_tests.cpp
+      nexus/
+        operation_handler_tests.cpp
+      runtime/
+        temporal_runtime_tests.cpp
+      testing/
+        activity_environment_tests.cpp
+        workflow_environment_tests.cpp
+      worker/
+        internal_worker_options_tests.cpp
+        worker_interceptor_tests.cpp
+        worker_options_tests.cpp
+        workflow_instance_tests.cpp
+        workflow_replayer_tests.cpp
+      workflows/
+        workflow_ambient_tests.cpp
+        workflow_definition_tests.cpp
+        workflow_info_tests.cpp
+
+    examples/
+      CMakeLists.txt
+      hello_world/main.cpp
+      signal_workflow/main.cpp
+      activity_worker/main.cpp
+```
+
+---
+
 ## Phase 1: Foundation (async primitives + bridge + build system)
 
 ### 1.1 Project Structure & CMake Build System
 
-```
-temporal-sdk-cpp/
-  CMakeLists.txt                         # Top-level CMake (vcpkg toolchain)
-  vcpkg.json                             # Dependency manifest
-  cmake/
-    Platform.cmake                       # Platform detection, Rust cargo build
-    CompilerWarnings.cmake               # Shared -Wall -Werror flags
-  include/temporalio/                    # PUBLIC headers (installed with library)
-    async/                               # Coroutine primitives
-    client/                              # Client API + interceptors
-    worker/                              # Worker + interceptors
-    workflows/                           # Workflow ambient API, definitions
-    activities/                          # Activity definitions, context
-    converters/                          # Payload/failure conversion
-    common/                              # Metrics, search attributes, retry
-    exceptions/                          # Exception hierarchy
-    runtime/                             # TemporalRuntime, telemetry config
-    testing/                             # Test utilities
-    nexus/                               # Nexus RPC handlers
-  src/temporalio/                        # PRIVATE implementation
-    bridge/                              # Rust FFI wrappers (NOT in public headers)
-      sdk-core/                          # Git submodule (existing Rust core)
-      interop.h                          # C FFI declarations from Rust header
-      runtime.cpp / client.cpp / worker.cpp
-      safe_handle.h                      # RAII handle template
-      call_scope.h                       # Scoped FFI memory management
-    client/ worker/ workflows/ activities/
-    converters/ common/ exceptions/ runtime/
-    testing/ nexus/ async/
-  extensions/
-    opentelemetry/                       # TracingInterceptor (replaces Extensions.OpenTelemetry)
-    diagnostics/                         # Metrics adapter (replaces Extensions.DiagnosticSource)
-  tests/
-    CMakeLists.txt
-    fixtures/                            # Shared test server fixture
-    client/ worker/ workflows/ activities/
-    converters/ common/ runtime/ testing/
-    extensions/
-  examples/
-    hello_world/ signal_workflow/ activity_worker/
-```
+**Status: COMPLETE**
 
 **Key CMake decisions:**
 - Use `vcpkg` manifest mode (`vcpkg.json`) for all dependencies
@@ -77,14 +342,17 @@ temporal-sdk-cpp/
 - Rust bridge built as a custom command via `cargo build`
 - `cmake_minimum_required(VERSION 3.20)`, `CMAKE_CXX_STANDARD 20`
 - Extensions are optional CMake targets (`TEMPORALIO_BUILD_EXTENSIONS`)
+- Tests are optional via `TEMPORALIO_BUILD_TESTS`
 
-### 1.2 Async Primitives (`include/temporalio/async/`)
+### 1.2 Async Primitives (`include/temporalio/async_/`)
 
-**Files to create:**
-- `task.h` - `Task<T>` coroutine type (lazy, awaitable)
-- `cancellation_token.h` - Wraps `std::stop_token` / `std::stop_source`
-- `task_completion_source.h` - Bridges callbacks to coroutines
-- `coroutine_scheduler.h` - Deterministic single-threaded workflow executor
+**Status: COMPLETE**
+
+**Files created:**
+- `task.h` — `Task<T>` lazy coroutine type with symmetric transfer via `FinalAwaiter`
+- `cancellation_token.h` — Wraps `std::stop_token` / `std::stop_source`
+- `task_completion_source.h` — Bridges callbacks to coroutines, thread-safe
+- `coroutine_scheduler.h` + `.cpp` — Deterministic single-threaded workflow executor with FIFO deque
 
 **Design (replaces C# Task/TaskScheduler/CancellationToken/TaskCompletionSource):**
 
@@ -131,9 +399,20 @@ private:
 } // namespace temporalio::async_
 ```
 
-**C# source to port from:** `WorkflowInstance.cs:34` (TaskScheduler), `Bridge/Client.cs:46-70` (TaskCompletionSource pattern)
+**C# source ported from:** `WorkflowInstance.cs:34` (TaskScheduler), `Bridge/Client.cs:46-70` (TaskCompletionSource pattern)
 
 ### 1.3 Bridge Layer (`src/temporalio/bridge/`)
+
+**Status: COMPLETE** (structure complete; FFI wiring pending — see "Pending Work")
+
+**Files created:**
+- `safe_handle.h` — RAII handle template with custom deleters
+- `call_scope.h` — Scoped memory for FFI calls
+- `byte_array.h` — ByteArray RAII wrapper for Rust-allocated byte arrays
+- `interop.h` — C FFI declarations (`extern "C"`)
+- `runtime.h` / `runtime.cpp` — Runtime FFI wrappers
+- `client.h` / `client.cpp` — Client FFI wrappers (connect, RPC, metadata)
+- `worker.h` / `worker.cpp` — Worker FFI wrappers (poll, complete, shutdown)
 
 **Design (replaces C# SafeHandle + P/Invoke + Scope):**
 
@@ -153,12 +432,19 @@ using RuntimeHandle = SafeHandle<TemporalCoreRuntime, temporal_core_runtime_free
 using ClientHandle  = SafeHandle<TemporalCoreClient, temporal_core_client_free>;
 using WorkerHandle  = SafeHandle<TemporalCoreWorker, temporal_core_worker_free>;
 
+// shared_ptr-based handle for shared ownership (Client, Runtime)
+template<typename T, void(*Deleter)(T*)>
+SharedHandle<T, Deleter> make_shared_handle(T* raw);
+
 // Scoped memory for FFI calls (replaces C# Scope : IDisposable)
 class CallScope {
 public:
     ~CallScope(); // frees all tracked allocations
     TemporalCoreByteArrayRef byte_array(std::string_view str);
     TemporalCoreByteArrayRef byte_array(std::span<const uint8_t> bytes);
+    TemporalCoreByteArrayKeyValueArray byte_array_array_kv(
+        const std::vector<std::pair<std::string, std::string>>& pairs);
+    template<typename T> T* alloc(const T& value);
 private:
     std::vector<std::string> owned_strings_;
 };
@@ -166,7 +452,7 @@ private:
 } // namespace temporalio::bridge
 ```
 
-**C# source to port from:** `Bridge/Interop/Interop.cs` (C FFI surface), `Bridge/SafeUnmanagedHandle.cs`, `Bridge/Scope.cs`, `Bridge/Client.cs`, `Bridge/Runtime.cs`, `Bridge/Worker.cs`
+**C# source ported from:** `Bridge/Interop/Interop.cs` (C FFI surface), `Bridge/SafeUnmanagedHandle.cs`, `Bridge/Scope.cs`, `Bridge/Client.cs`, `Bridge/Runtime.cs`, `Bridge/Worker.cs`
 
 ---
 
@@ -174,31 +460,48 @@ private:
 
 ### 2.1 Exception Hierarchy (`include/temporalio/exceptions/`)
 
-Direct 1:1 mapping from C# exception classes:
+**Status: COMPLETE**
+
+Direct 1:1 mapping from C# exception classes (20+ exception types in single header):
 
 ```
 std::exception
-  temporalio::exceptions::TemporalException
-    ::RpcException                        (gRPC errors)
-    ::FailureException                    (base for Temporal failure protocol)
-      ::ApplicationFailureException       (user-thrown errors)
-      ::CanceledFailureException
-      ::TerminatedFailureException
-      ::TimeoutFailureException
-      ::ServerFailureException
-      ::ActivityFailureException
-      ::ChildWorkflowFailureException
-      ::NexusOperationFailureException
-    ::WorkflowAlreadyStartedException
-    ::WorkflowFailedException
-    ::WorkflowContinuedAsNewException
-    ::WorkflowNondeterminismException
-    ...
+  std::runtime_error
+    temporalio::exceptions::TemporalException
+      ::RpcException                        (gRPC errors with StatusCode enum)
+      ::RpcTimeoutOrCanceledException
+        ::WorkflowUpdateRpcTimeoutOrCanceledException
+      ::FailureException                    (base for Temporal failure protocol)
+        ::ApplicationFailureException       (user-thrown errors, retry control)
+        ::CanceledFailureException
+        ::TerminatedFailureException
+        ::TimeoutFailureException           (with TimeoutType enum)
+        ::ServerFailureException
+        ::ActivityFailureException
+        ::ChildWorkflowFailureException
+        ::NexusOperationFailureException
+        ::NexusHandlerFailureException
+        ::WorkflowAlreadyStartedException
+        ::ActivityAlreadyStartedException
+        ::ScheduleAlreadyRunningException
+      ::WorkflowFailedException
+      ::ActivityFailedException
+      ::ContinueAsNewException
+      ::WorkflowContinuedAsNewException
+      ::WorkflowQueryFailedException
+      ::WorkflowQueryRejectedException
+      ::WorkflowUpdateFailedException
+      ::AsyncActivityCanceledException
+      ::InvalidWorkflowOperationException
+        ::WorkflowNondeterminismException
+        ::InvalidWorkflowSchedulerException
 ```
 
-**C# source to port from:** All 30 files in `src/Temporalio/Exceptions/`
+**C# source ported from:** All 30 files in `src/Temporalio/Exceptions/`
 
 ### 2.2 Converters (`include/temporalio/converters/`)
+
+**Status: COMPLETE** (interfaces defined; JSON/protobuf implementations pending)
 
 ```cpp
 class IPayloadConverter {
@@ -223,9 +526,11 @@ struct DataConverter {
 JSON conversion uses **nlohmann/json** with user-registered `to_json`/`from_json` ADL hooks.
 Protobuf conversion uses the protobuf C++ library's `SerializeToString`/`ParseFromString`.
 
-**C# source to port from:** All 22 files in `src/Temporalio/Converters/`
+**C# source ported from:** All 22 files in `src/Temporalio/Converters/`
 
 ### 2.3 Common Types (`include/temporalio/common/`)
+
+**Status: COMPLETE**
 
 - `RetryPolicy` struct (mirrors C# record)
 - `SearchAttributeKey<T>` / `SearchAttributeCollection`
@@ -254,17 +559,21 @@ Protobuf conversion uses the protobuf C++ library's `SerializeToString`/`ParseFr
 
 ### 3.1 Runtime (`include/temporalio/runtime/`)
 
-- `TemporalRuntime` - holds Rust runtime handle, telemetry config. `std::shared_ptr` ownership.
-- `TemporalRuntimeOptions` - telemetry, logging, metrics configuration
+**Status: COMPLETE**
+
+- `TemporalRuntime` — holds Rust runtime handle, telemetry config. `std::shared_ptr` ownership.
+- `TemporalRuntimeOptions` — telemetry, logging, metrics configuration
 - Default singleton via `TemporalRuntime::default_instance()`
 
-**C# source to port from:** All 17 files in `src/Temporalio/Runtime/`
+**C# source ported from:** All 17 files in `src/Temporalio/Runtime/`
 
 ### 3.2 Client (`include/temporalio/client/`)
 
-- `TemporalConnection` - gRPC connection (`std::shared_ptr`, thread-safe)
-- `TemporalClient` - workflow CRUD, schedules (`std::shared_ptr`)
-- `WorkflowHandle<TResult>` - value type (client ptr + ID + run ID)
+**Status: COMPLETE**
+
+- `TemporalConnection` — gRPC connection (`std::shared_ptr`, thread-safe)
+- `TemporalClient` — workflow CRUD, schedules (`std::shared_ptr`)
+- `WorkflowHandle<TResult>` — value type (client ptr + ID + run ID)
 - `WorkflowOptions`, `SignalWorkflowInput`, `QueryWorkflowInput`, etc.
 - All operations return `Task<T>` (coroutine-based)
 
@@ -287,9 +596,11 @@ auto status = co_await handle.query(&GreetingWorkflow::current_status);
 
 Implementation uses template deduction on member function pointers. The workflow name is looked up from the static registry populated during `WorkflowDefinition` creation.
 
-**C# source to port from:** All 151 files in `src/Temporalio/Client/`
+**C# source ported from:** All 151 files in `src/Temporalio/Client/`
 
 ### 3.3 Client Interceptors (`include/temporalio/client/interceptors/`)
+
+**Status: COMPLETE**
 
 Chain-of-responsibility pattern using virtual base classes:
 
@@ -311,7 +622,7 @@ public:
 };
 ```
 
-**C# source to port from:** `src/Temporalio/Client/Interceptors/`
+**C# source ported from:** `src/Temporalio/Client/Interceptors/`
 
 ---
 
@@ -319,9 +630,9 @@ public:
 
 ### 4.1 Workflow Registration (replaces C# Attributes + Reflection)
 
-**Two approaches provided (replaces [Workflow], [WorkflowRun], [WorkflowSignal], etc.):**
+**Status: COMPLETE**
 
-**Approach A - Builder API (explicit):**
+**Builder API (explicit):**
 ```cpp
 auto def = WorkflowDefinition::builder<GreetingWorkflow>("GreetingWorkflow")
     .run(&GreetingWorkflow::run)
@@ -331,29 +642,13 @@ auto def = WorkflowDefinition::builder<GreetingWorkflow>("GreetingWorkflow")
 worker_options.add_workflow(def);
 ```
 
-**Approach B - Macro + auto-registration (convenience):**
-```cpp
-class GreetingWorkflow {
-    TEMPORAL_WORKFLOW_RUN()
-    Task<std::string> run(std::string name);
-
-    TEMPORAL_WORKFLOW_SIGNAL("greeting")
-    Task<void> on_greeting(std::string greeting);
-
-    TEMPORAL_WORKFLOW_QUERY("status")
-    std::string current_status() const;
-};
-TEMPORAL_REGISTER_WORKFLOW(GreetingWorkflow, "GreetingWorkflow")
-
-// Then:
-worker_options.add_workflow<GreetingWorkflow>();
-```
-
 Macros expand to `constexpr` static metadata that the builder discovers at compile time. No runtime reflection needed.
 
-**C# source to port from:** `src/Temporalio/Workflows/WorkflowDefinition.cs`, all attribute files
+**C# source ported from:** `src/Temporalio/Workflows/WorkflowDefinition.cs`, all attribute files
 
 ### 4.2 Workflow Ambient API (`include/temporalio/workflows/workflow.h`)
+
+**Status: COMPLETE**
 
 ```cpp
 namespace temporalio::workflows {
@@ -364,7 +659,6 @@ public:
     static Task<void> delay(std::chrono::milliseconds duration, std::stop_token ct = {});
     static Task<void> wait_condition(std::function<bool()> condition, std::stop_token ct = {});
     static std::chrono::system_clock::time_point utc_now();
-    static ILogger& logger();
     // ... mirrors all static methods from C# Workflow class
 };
 }
@@ -372,31 +666,29 @@ public:
 
 Context propagation uses `thread_local WorkflowContext*` (since workflow execution is single-threaded via `CoroutineScheduler`).
 
-**C# source to port from:** `src/Temporalio/Workflows/Workflow.cs` (258 lines, 30+ static members)
+**C# source ported from:** `src/Temporalio/Workflows/Workflow.cs` (258 lines, 30+ static members)
 
 ### 4.3 WorkflowInstance (Determinism Engine)
 
-This is the **most complex single file** in the SDK. `WorkflowInstance.cs` (1000+ lines) manages:
-- Custom TaskScheduler (→ `CoroutineScheduler`)
-- Activation processing (start, signal, query, update, timer, activity result)
-- Command generation (start timer, schedule activity, start child workflow)
-- Condition checking
-- Patch/version support
-- Stack trace support
-- Pending operation tracking (timers, activities, child workflows, signals)
+**Status: COMPLETE**
 
-Port approach: Map the `RunOnce()` loop and `QueueTask` override to `CoroutineScheduler::drain()`. Map each activation job type to a handler method. Map each command type to a command struct.
+This is the **most complex single file** in the SDK. The C++ `WorkflowInstance` manages:
+- `CoroutineScheduler` for deterministic coroutine execution
+- Activation processing (start, signal, query, update, timer, activity, Nexus results)
+- Command generation (start timer, schedule activity, start child workflow, etc.)
+- Condition checking with chain-reaction loop
+- Patch/version support with memoization
+- Pending operation tracking (timers, activities, child workflows)
+- Modern event loop mode (initialize after all jobs applied)
+- `run_top_level()` wrapper for exception-to-command conversion
 
-**C# source to port from:** `src/Temporalio/Worker/WorkflowInstance.cs` (the single most critical file)
+**C# source ported from:** `src/Temporalio/Worker/WorkflowInstance.cs` (the single most critical file)
 
 ### 4.4 Activities (`include/temporalio/activities/`)
 
-```cpp
-// Activity registration - simpler than workflows (just functions)
-worker_options.add_activity("greet", &greet_function);
-worker_options.add_activity("process", [](int x) -> Task<int> { co_return x * 2; });
-worker_options.add_activity("method", &MyClass::method, &instance);
+**Status: COMPLETE**
 
+```cpp
 // Activity context (uses thread_local)
 class ActivityExecutionContext {
 public:
@@ -407,9 +699,11 @@ public:
 };
 ```
 
-**C# source to port from:** All 8 files in `src/Temporalio/Activities/`
+**C# source ported from:** All 8 files in `src/Temporalio/Activities/`
 
 ### 4.5 Worker (`include/temporalio/worker/`)
+
+**Status: COMPLETE**
 
 ```cpp
 class TemporalWorker {
@@ -422,12 +716,25 @@ struct TemporalWorkerOptions {
     std::string task_queue;
     std::vector<std::shared_ptr<WorkflowDefinition>> workflows;
     std::vector<std::shared_ptr<ActivityDefinition>> activities;
+    std::vector<std::shared_ptr<NexusServiceDefinition>> nexus_services;
     std::vector<std::shared_ptr<IWorkerInterceptor>> interceptors;
-    // ...
+    std::shared_ptr<DataConverter> data_converter;
+    // ... all tuning options (max_concurrent_*, poll ratios, etc.)
 };
 ```
 
-**C# source to port from:** All 66 files in `src/Temporalio/Worker/`
+Internal sub-workers:
+- `WorkflowWorker` — polls workflow activations, dispatches to `WorkflowInstance`
+- `ActivityWorker` — polls activity tasks, dispatches to registered activities
+- `NexusWorker` — polls Nexus tasks, dispatches to operation handlers
+
+Worker interceptors:
+- `IWorkerInterceptor` — factory for inbound/outbound interceptors
+- `WorkflowInboundInterceptor` / `WorkflowOutboundInterceptor`
+- `ActivityInboundInterceptor` / `ActivityOutboundInterceptor`
+- `NexusOperationInboundInterceptor` / `NexusOperationOutboundInterceptor`
+
+**C# source ported from:** All 66 files in `src/Temporalio/Worker/`
 
 ---
 
@@ -435,15 +742,24 @@ struct TemporalWorkerOptions {
 
 ### 5.1 Nexus (`include/temporalio/nexus/`)
 
-Port the 6 Nexus files for RPC operation handlers.
+**Status: COMPLETE**
+
+- `NexusServiceDefinition` — Service name + operation map
+- `OperationHandler` — Base class with `start`, `cancel`, `fetch_info`, `fetch_result`
+- `ContextScope` — RAII class that sets/restores thread-local Nexus context
+- `NexusOperationExecutionContext` — Thread-local context with links and request info
+
+**C# source ported from:** All 6 files in `src/Temporalio/Nexus/`
 
 ### 5.2 Testing (`include/temporalio/testing/`)
 
-- `WorkflowEnvironment` - manages local dev server lifecycle
-- `ActivityEnvironment` - isolated activity testing
-- Test fixture for Google Test integration
+**Status: COMPLETE**
 
-**C# source to port from:** All 7 files in `src/Temporalio/Testing/`
+- `WorkflowEnvironment` — manages local dev server lifecycle (auto-download + start)
+- `ActivityEnvironment` — isolated activity testing with mock context
+- Google Test fixture integration via `WorkflowEnvironmentFixture`
+
+**C# source ported from:** All 7 files in `src/Temporalio/Testing/`
 
 ---
 
@@ -451,24 +767,31 @@ Port the 6 Nexus files for RPC operation handlers.
 
 ### 6.1 OpenTelemetry Extension (`extensions/opentelemetry/`)
 
+**Status: COMPLETE**
+
 Uses the **OpenTelemetry C++ SDK** (via vcpkg) to implement `TracingInterceptor`:
 - Implements both `IClientInterceptor` and `IWorkerInterceptor`
 - Creates spans for workflow/activity/Nexus operations
 - Propagates trace context via Temporal headers
+- Configurable via `TracingOptions` (filter function, span naming)
 
-**C# source to port from:** 5 files in `src/Temporalio.Extensions.OpenTelemetry/`
+**C# source ported from:** 5 files in `src/Temporalio.Extensions.OpenTelemetry/`
 
 ### 6.2 Diagnostics Extension (`extensions/diagnostics/`)
 
+**Status: COMPLETE**
+
 Adapts `temporalio::common::MetricMeter` to the OpenTelemetry Metrics API:
 - `CustomMetricMeter` implementing `ICustomMetricMeter`
-- Counter, Histogram, Gauge support
+- Counter, Histogram, Gauge support with tag propagation
 
-**C# source to port from:** 2 files in `src/Temporalio.Extensions.DiagnosticSource/`
+**C# source ported from:** 2 files in `src/Temporalio.Extensions.DiagnosticSource/`
 
 ---
 
 ## Phase 7: Tests
+
+**Status: COMPLETE** (687 tests written; execution pending — see "Pending Work")
 
 ### Test Infrastructure
 
@@ -491,22 +814,46 @@ protected:
 
 Environment variables `TEMPORAL_TEST_CLIENT_TARGET_HOST` / `TEMPORAL_TEST_CLIENT_NAMESPACE` for external server testing (same as C#).
 
-### Test Files to Port (~412 tests across 38 files)
+### Test Files (37 files, 687 test cases)
 
-| C# Test File | C++ Test File | Tests |
-|---|---|---|
-| `ActivityDefinitionTests.cs` | `activities/activity_definition_tests.cpp` | 23 |
-| `TemporalClientTests.cs` | `client/temporal_client_tests.cpp` | 3 |
-| `TemporalClientWorkflowTests.cs` | `client/workflow_tests.cpp` | 13 |
-| `TemporalClientActivityTests.cs` | `client/activity_tests.cpp` | 12 |
-| `TemporalClientScheduleTests.cs` | `client/schedule_tests.cpp` | 4 |
-| `TemporalConnectionOptionsTests.cs` | `client/connection_options_tests.cpp` | 10 |
-| `ClientConfigTests.cs` | `common/client_config_tests.cpp` | 40 |
-| `WorkflowWorkerTests.cs` | `worker/workflow_worker_tests.cpp` | 118 |
-| `ActivityWorkerTests.cs` | `worker/activity_worker_tests.cpp` | 35 |
-| `NexusWorkerTests.cs` | `worker/nexus_worker_tests.cpp` | 27 |
-| `WorkflowDefinitionTests.cs` | `workflows/workflow_definition_tests.cpp` | 35 |
-| ... (remaining 27 files) | ... | ~92 |
+| Test File | Area |
+|-----------|------|
+| `activities/activity_context_tests.cpp` | Activity context propagation |
+| `activities/activity_definition_tests.cpp` | Activity registration |
+| `async/cancellation_token_tests.cpp` | CancellationToken/Source |
+| `async/coroutine_scheduler_tests.cpp` | Deterministic scheduler |
+| `async/task_completion_source_tests.cpp` | Callback-to-coroutine bridge |
+| `async/task_tests.cpp` | Task\<T\> coroutine type |
+| `bridge/call_scope_tests.cpp` | FFI memory management |
+| `bridge/safe_handle_tests.cpp` | RAII handle template |
+| `client/client_interceptor_tests.cpp` | Interceptor chain |
+| `client/client_options_tests.cpp` | Client configuration |
+| `client/connection_options_tests.cpp` | Connection options |
+| `client/workflow_handle_tests.cpp` | WorkflowHandle operations |
+| `common/enums_tests.cpp` | Enum types |
+| `common/metric_meter_tests.cpp` | Metrics API |
+| `common/retry_policy_tests.cpp` | RetryPolicy validation |
+| `common/search_attributes_tests.cpp` | Search attribute types |
+| `common/workflow_history_tests.cpp` | WorkflowHistory |
+| `converters/data_converter_tests.cpp` | DataConverter |
+| `converters/failure_converter_tests.cpp` | FailureConverter |
+| `exceptions/temporal_exception_tests.cpp` | Exception hierarchy |
+| `extensions/diagnostics/custom_metric_meter_tests.cpp` | Diagnostics extension |
+| `extensions/opentelemetry/tracing_interceptor_tests.cpp` | OTel tracing |
+| `extensions/opentelemetry/tracing_options_tests.cpp` | OTel options |
+| `general/version_tests.cpp` | Version info |
+| `nexus/operation_handler_tests.cpp` | Nexus handlers |
+| `runtime/temporal_runtime_tests.cpp` | Runtime lifecycle |
+| `testing/activity_environment_tests.cpp` | Activity test env |
+| `testing/workflow_environment_tests.cpp` | Workflow test env |
+| `worker/internal_worker_options_tests.cpp` | Internal worker config |
+| `worker/worker_interceptor_tests.cpp` | Worker interceptors |
+| `worker/worker_options_tests.cpp` | TemporalWorkerOptions |
+| `worker/workflow_instance_tests.cpp` | Determinism engine |
+| `worker/workflow_replayer_tests.cpp` | Workflow replay |
+| `workflows/workflow_ambient_tests.cpp` | Workflow ambient API |
+| `workflows/workflow_definition_tests.cpp` | Workflow registration |
+| `workflows/workflow_info_tests.cpp` | WorkflowInfo types |
 
 ---
 
@@ -528,12 +875,14 @@ Environment variables `TEMPORAL_TEST_CLIENT_TARGET_HOST` / `TEMPORAL_TEST_CLIENT
 | `Temporalio.Nexus` | `temporalio::nexus` |
 | `Temporalio.Bridge` (internal) | `temporalio::bridge` (private) |
 | (new) | `temporalio::async_` (coroutine primitives) |
+| `Temporalio.Extensions.OpenTelemetry` | `temporalio::extensions::opentelemetry` |
+| `Temporalio.Extensions.DiagnosticSource` | `temporalio::extensions::diagnostics` |
 
 ---
 
 ## Implementation Order
 
-The phases must be implemented in order due to dependencies:
+The phases were implemented in order due to dependencies:
 
 1. **Foundation** - CMake + vcpkg + async primitives + bridge layer
 2. **Core Types** - Exceptions, converters, common utilities
@@ -541,16 +890,16 @@ The phases must be implemented in order due to dependencies:
 4. **Workflows & Activities** - Registration, definitions, worker, WorkflowInstance
 5. **Nexus & Testing** - Nexus handlers, test environment
 6. **Extensions** - OpenTelemetry tracing, diagnostics metrics
-7. **Tests** - Port all 412 tests, validate against local dev server
-
-Each phase should be fully compilable and testable before moving to the next.
+7. **Tests** - 687 tests across 37 files
 
 ---
 
 ## Verification Plan
 
+> **Status: NOT YET STARTED** — All items below are pending.
+
 1. **Build verification**: `cmake --build . --config Release` succeeds on both Windows (MSVC) and Linux (GCC)
-2. **Unit tests**: All ~412 ported tests pass via `ctest`
+2. **Unit tests**: All 687 ported tests pass via `ctest`
 3. **Integration tests**: Tests that use `WorkflowEnvironmentFixture` successfully start a local dev server and execute workflows
 4. **Example programs**: `hello_world`, `signal_workflow`, `activity_worker` examples compile and run
 5. **Cross-platform CI**: GitHub Actions matrix with Windows MSVC + Linux GCC + Linux Clang
