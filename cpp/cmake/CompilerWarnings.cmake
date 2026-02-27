@@ -3,10 +3,13 @@
 function(temporalio_set_compiler_warnings target)
     if(MSVC)
         target_compile_options(${target} PRIVATE
-            /W3
+            /W4
+            /WX
             /permissive-
             /Zc:__cplusplus   # Report correct __cplusplus value
             /Zc:preprocessor  # Standards-conforming preprocessor
+            /external:anglebrackets  # Treat angle-bracket includes as external
+            /external:W0             # Suppress warnings in external headers
         )
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${target} PRIVATE

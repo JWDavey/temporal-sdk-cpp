@@ -234,7 +234,7 @@ public:
         WorkflowQueryDefinition qry;
         qry.name = name;
         qry.handler = [method](void* instance,
-                               std::vector<std::any> args) -> std::any {
+                               [[maybe_unused]] std::vector<std::any> args) -> std::any {
             auto* self = static_cast<T*>(instance);
             if constexpr (sizeof...(Args) == 0) {
                 return std::any((self->*method)());
@@ -256,7 +256,7 @@ public:
         WorkflowQueryDefinition qry;
         qry.name = name;
         qry.handler = [method](void* instance,
-                               std::vector<std::any> args) -> std::any {
+                               [[maybe_unused]] std::vector<std::any> args) -> std::any {
             auto* self = static_cast<T*>(instance);
             if constexpr (sizeof...(Args) == 0) {
                 return std::any((self->*method)());

@@ -186,6 +186,13 @@ TEST(CoroutineSchedulerTest, IsNonMovable) {
 // Ordering (FIFO -- deterministic replay processes in schedule order)
 // ===========================================================================
 
+// Helper coroutine that takes parameters by value so they are safely
+// captured in the coroutine frame (avoids dangling-lambda-capture pitfall).
+static Task<void> record_and_return(std::vector<int>& order, int value) {
+    order.push_back(value);
+    co_return;
+}
+
 TEST(CoroutineSchedulerTest, FIFOOrdering) {
     CoroutineScheduler scheduler;
 
@@ -194,10 +201,7 @@ TEST(CoroutineSchedulerTest, FIFOOrdering) {
     std::vector<Task<void>> tasks;
 
     for (int i = 0; i < N; ++i) {
-        tasks.push_back([&execution_order, i]() -> Task<void> {
-            execution_order.push_back(i);
-            co_return;
-        }());
+        tasks.push_back(record_and_return(execution_order, i));
     }
 
     for (auto& t : tasks) {

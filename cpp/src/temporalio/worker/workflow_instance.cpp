@@ -11,7 +11,7 @@ namespace temporalio::worker {
 WorkflowInstance::WorkflowInstance(Config config)
     : definition_(std::move(config.definition)),
       info_(std::move(config.info)),
-      random_(config.randomness_seed) {}
+      random_(static_cast<std::mt19937::result_type>(config.randomness_seed)) {}
 
 WorkflowInstance::~WorkflowInstance() = default;
 
@@ -768,7 +768,7 @@ async_::Task<std::any> WorkflowInstance::run_top_level(
                 commands_.push_back(std::move(cmd));
             }
         }
-    } catch (const std::exception& e) {
+    } catch (const std::exception&) {
         // Unexpected failure (e.g., failure converter itself threw).
         // This becomes an activation-level exception.
         current_activation_exception_ = std::current_exception();

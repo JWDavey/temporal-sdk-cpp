@@ -125,7 +125,7 @@ public:
 
     std::unique_ptr<ICustomMetricHistogram> create_histogram(
         const std::string& name, const std::optional<std::string>& unit,
-        const std::optional<std::string>& description) override {
+        const std::optional<std::string>& /*description*/) override {
         last_histogram_name = name;
         last_histogram_unit = unit;
         auto ptr = std::make_unique<TrackingHistogram>();
@@ -135,15 +135,15 @@ public:
 
     std::unique_ptr<ICustomMetricDurationHistogram>
     create_duration_histogram(
-        const std::string& name, const std::optional<std::string>& unit,
-        const std::optional<std::string>& description) override {
+        const std::string& name, const std::optional<std::string>& /*unit*/,
+        const std::optional<std::string>& /*description*/) override {
         last_duration_histogram_name = name;
         return std::make_unique<MockDurationHistogram>();
     }
 
     std::unique_ptr<ICustomMetricGauge> create_gauge(
-        const std::string& name, const std::optional<std::string>& unit,
-        const std::optional<std::string>& description) override {
+        const std::string& name, const std::optional<std::string>& /*unit*/,
+        const std::optional<std::string>& /*description*/) override {
         last_gauge_name = name;
         auto ptr = std::make_unique<TrackingGauge>();
         last_gauge = ptr.get();

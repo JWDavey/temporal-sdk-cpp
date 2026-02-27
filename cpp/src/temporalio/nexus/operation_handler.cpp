@@ -223,11 +223,16 @@ async_::Task<OperationStartResult> WorkflowRunOperationHandler::start_async(
     co_return OperationStartResult::async_result(handle.to_token());
 }
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4702) // unreachable code (co_return after throw in coroutine stubs)
+#endif
+
 async_::Task<std::any> WorkflowRunOperationHandler::fetch_result_async(
     OperationFetchResultContext /*context*/) {
     // TODO: Implement result fetching by polling/waiting on the workflow
     throw std::logic_error("fetch_result_async not implemented");
-    co_return std::any{};  // unreachable, makes this a coroutine
+    co_return std::any{};  // makes this a coroutine
 }
 
 async_::Task<NexusOperationState>
@@ -235,8 +240,12 @@ WorkflowRunOperationHandler::fetch_info_async(
     OperationFetchInfoContext /*context*/) {
     // TODO: Implement by describing the workflow
     throw std::logic_error("fetch_info_async not implemented");
-    co_return NexusOperationState{};  // unreachable, makes this a coroutine
+    co_return NexusOperationState{};  // makes this a coroutine
 }
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 async_::Task<void> WorkflowRunOperationHandler::cancel_async(
     OperationCancelContext context) {

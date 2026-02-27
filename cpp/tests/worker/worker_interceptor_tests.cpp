@@ -377,7 +377,7 @@ TEST(WorkflowInterceptorChainTest, ChainedInboundDelegatesToNext) {
     public:
         RootInbound() : WorkflowInboundInterceptor() {}
 
-        std::any handle_query(HandleQueryInput input) override {
+        std::any handle_query(HandleQueryInput /*input*/) override {
             return std::any(std::string("root-result"));
         }
     };
@@ -408,7 +408,7 @@ TEST(ActivityInterceptorChainTest, ChainedOutboundDelegatesToNext) {
         RootOutbound() : ActivityOutboundInterceptor() {}
         int heartbeat_count = 0;
 
-        void heartbeat(HeartbeatInput input) override { ++heartbeat_count; }
+        void heartbeat(HeartbeatInput /*input*/) override { ++heartbeat_count; }
     };
 
     class MiddleOutbound : public ActivityOutboundInterceptor {

@@ -237,7 +237,7 @@ void NexusWorker::handle_start_operation(
     const std::string& service_name,
     const std::string& operation_name,
     nexus::INexusOperationHandler* handler,
-    const std::vector<uint8_t>& input) {
+    const std::vector<uint8_t>& /*input*/) {
     // Create a running task state
     auto running = std::make_shared<RunningNexusTask>();
     running->task_token = task_token;
