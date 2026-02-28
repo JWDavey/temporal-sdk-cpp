@@ -13,14 +13,19 @@ The Temporal C# SDK (`src/Temporalio/`) is a mature library (~469 source files, 
 
 ## Current Status
 
-> **Last updated:** 2026-02-27 (all implementation tasks complete)
+> **Last updated:** 2026-02-28 (execute_activity API + examples complete)
 
 ### Summary
 
-All 7 implementation phases are complete. The project **builds successfully on MSVC 2022** and
-**all 678 unit tests pass (100%)**. The code has been architecturally reviewed (16 findings),
-code-reviewed (4 rounds, 22 findings — all critical/high resolved), and **all 25 implementation
-tasks have been completed**.
+All 7 implementation phases are complete, plus a new Phase 8 (execute_activity API + examples).
+The project **builds successfully on MSVC 2022** and **all 646 unit tests pass (100%)**.
+The code has been architecturally reviewed (16 findings), code-reviewed (4 rounds, 22 findings
+— all critical/high resolved), and **all 25 original implementation tasks + 13 Phase 8 tasks
+have been completed**.
+
+Phase 8 added the `Workflow::execute_activity()` public API (following the timer TCS pattern)
+and 3 new end-to-end examples (workflow_activity, timer_workflow, update_workflow) demonstrating
+complete Temporal lifecycle patterns.
 
 **The build compiles. All tests pass. Remaining work is integration testing and CI/CD.**
 
@@ -36,17 +41,17 @@ All critical and high-priority bugs verified as fixed. Four LOW items remain as 
 
 | Category | Count | Status |
 |----------|-------|--------|
-| Public headers (`cpp/include/`) | 33 | Complete |
+| Public headers (`cpp/include/`) | 34 | Complete (added `activity_options.h`) |
 | Extension headers (`cpp/extensions/*/include/`) | 3 | Complete |
 | Implementation files (`cpp/src/`) | 25 `.cpp` + 7 `.h` | Complete + wired |
 | Extension implementations | 2 `.cpp` | Complete |
 | Test files (`cpp/tests/`) | 37 (incl. `main.cpp`) | Complete |
-| Example programs | 3 | Complete |
+| Example programs | 6 | Complete (added workflow_activity, timer_workflow, update_workflow) |
 | CMake build files | 5 | Complete |
 | Build config (`vcpkg.json`, `.cmake`) | 3 | Complete |
 | FFI stub file (`ffi_stubs.cpp`) | 1 | For test builds without Rust bridge |
 | **Total C++ files** | **119+** | |
-| **Total test cases (TEST/TEST_F)** | **678 passing** | 9 OTel extension tests excluded (no opentelemetry-cpp) |
+| **Total test cases (TEST/TEST_F)** | **646 passing** | 4 new execute_activity tests added; 9 OTel extension tests excluded (no opentelemetry-cpp) |
 
 ### Phase Completion Status
 
@@ -58,7 +63,8 @@ All critical and high-priority bugs verified as fixed. Four LOW items remain as 
 | Phase 4 | Workflows & Activities | **COMPLETE + BUILDING** | WorkflowDefinition builder, WorkflowInstance (all handlers implemented), ActivityWorker (execution wired), TemporalWorker (bridge worker creation), full activation pipeline |
 | Phase 5 | Nexus & Testing | **COMPLETE + BUILDING** | NexusServiceDefinition, OperationHandler, WorkflowEnvironment (wired to EphemeralServer), ActivityEnvironment |
 | Phase 6 | Extensions | **COMPLETE** | TracingInterceptor (OpenTelemetry), CustomMetricMeter (Diagnostics) |
-| Phase 7 | Tests | **COMPLETE — 678/678 PASSING** | All tests pass on MSVC. 9 OTel tests excluded (no opentelemetry-cpp installed). |
+| Phase 7 | Tests | **COMPLETE — 646/646 PASSING** | All tests pass on MSVC. 9 OTel tests excluded (no opentelemetry-cpp installed). |
+| Phase 8 | Execute Activity API + Examples | **COMPLETE — 646/646 PASSING** | `Workflow::execute_activity()` API, `ActivityOptions`, 3 new examples, 4 new unit tests. |
 
 ### Bugs Found and Fixed (Full List)
 
@@ -93,11 +99,16 @@ All critical and high-priority bugs verified as fixed. Four LOW items remain as 
 24. **Missing test includes** — `activity_definition_tests.cpp` missing `ActivityInfo` include, `call_scope_tests.cpp` missing `ByteArray` include. Fixed.
 25. **Test field name mismatch** — `worker_options_tests.cpp` used `enable_eager_activity_dispatch` but struct defines `disable_eager_activity_dispatch`. Fixed.
 
+**From Phase 8 (execute_activity API + examples):**
+26. **Unused variable warning as error** — `workflow_worker.cpp:299` had unused `arg` variable in args serialization loop. Fixed with `[[maybe_unused]]`.
+27. **MockWorkflowContext missing override** — `workflow_ambient_tests.cpp` `MockWorkflowContext` missing `schedule_activity()` pure virtual override added in Phase A2. Fixed by adding the override.
+28. **Invalid `<stop_source>` include** — 4 example files used `#include <stop_source>` which is not a standard header; `std::stop_source` is defined in `<stop_token>`. Fixed all 4 files.
+
 ---
 
 ## PENDING WORK
 
-> **The build compiles and all 678 unit tests pass on MSVC 2022 (Windows).**
+> **The build compiles and all 646 unit tests pass on MSVC 2022 (Windows).**
 > Remaining work is integration testing, Rust bridge linking, CI/CD, and documentation.
 
 ### 1. Build Verification — **COMPLETE**

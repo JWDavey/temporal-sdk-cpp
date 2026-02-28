@@ -78,6 +78,27 @@ public:
         uint32_t seq{0};
     };
 
+    /// Data for a ScheduleActivity command.
+    struct ScheduleActivityData {
+        uint32_t seq{0};
+        std::string activity_type;
+        std::string task_queue;
+        std::vector<std::any> args;
+        std::optional<std::chrono::milliseconds> schedule_to_close_timeout{};
+        std::optional<std::chrono::milliseconds> schedule_to_start_timeout{};
+        std::optional<std::chrono::milliseconds> start_to_close_timeout{};
+        std::optional<std::chrono::milliseconds> heartbeat_timeout{};
+        std::optional<common::RetryPolicy> retry_policy{};
+        workflows::ActivityCancellationType cancellation_type{
+            workflows::ActivityCancellationType::kTryCancel};
+        std::optional<std::string> activity_id{};
+    };
+
+    /// Data for a RequestCancelActivity command.
+    struct RequestCancelActivityData {
+        uint32_t seq{0};
+    };
+
     /// Data for query response commands (kRespondQuery / kRespondQueryFailed).
     struct QueryResponseData {
         std::string query_id;
@@ -220,6 +241,10 @@ public:
         std::function<bool()> condition,
         std::optional<std::chrono::milliseconds> timeout,
         std::stop_token ct) override;
+    async_::Task<std::any> schedule_activity(
+        const std::string& activity_type,
+        std::vector<std::any> args,
+        const workflows::ActivityOptions& options) override;
 
     /// Get pending commands to send to the server.
     const std::vector<Command>& pending_commands() const noexcept {

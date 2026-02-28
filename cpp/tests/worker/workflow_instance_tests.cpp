@@ -1,13 +1,16 @@
 #include <gtest/gtest.h>
 
 #include <any>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "temporalio/async_/task.h"
+#include "temporalio/exceptions/temporal_exception.h"
 #include "temporalio/worker/workflow_instance.h"
+#include "temporalio/workflows/activity_options.h"
 #include "temporalio/workflows/workflow.h"
 #include "temporalio/workflows/workflow_definition.h"
 #include "temporalio/workflows/workflow_info.h"
@@ -61,6 +64,21 @@ public:
 
 private:
     int counter_ = 0;
+};
+
+/// Workflow that calls execute_activity and returns the result.
+class ActivityWorkflow {
+public:
+    Task<std::string> run() {
+        ActivityOptions opts;
+        opts.start_to_close_timeout = std::chrono::milliseconds{30000};
+        opts.task_queue = "activity-queue";
+        auto result = co_await Workflow::execute_activity(
+            "greet", std::any(std::string("world")), opts);
+        co_return std::any_cast<std::string>(result);
+    }
+
+private:
 };
 
 WorkflowInfo make_test_info(const std::string& wf_type = "SimpleWorkflow") {
@@ -977,4 +995,143 @@ TEST(WorkflowInstanceTest, MainRunDoesNotIncrementHandlerCount) {
     // The main workflow run should not affect handler count
     // After activation, all_handlers_finished should still be true
     EXPECT_TRUE(inst->all_handlers_finished());
+}
+
+// ===========================================================================
+// Execute activity tests (Phase A6)
+// ===========================================================================
+
+TEST(WorkflowInstanceTest, ScheduleActivityCommandEmittedWithCorrectFields) {
+    auto def =
+        WorkflowDefinition::create<ActivityWorkflow>("ActivityWorkflow")
+            .run(&ActivityWorkflow::run)
+            .build();
+
+    auto [inst, cmds] = create_started_instance(def);
+
+    // The workflow calls execute_activity in its run(), which should emit
+    // a kScheduleActivity command during the first activation.
+    bool found_schedule = false;
+    for (const auto& cmd : cmds) {
+        if (cmd.type == WorkflowInstance::CommandType::kScheduleActivity) {
+            found_schedule = true;
+            EXPECT_EQ(cmd.seq, 1u);
+            auto& data = std::any_cast<
+                const WorkflowInstance::ScheduleActivityData&>(cmd.data);
+            EXPECT_EQ(data.activity_type, "greet");
+            EXPECT_EQ(data.task_queue, "activity-queue");
+            EXPECT_EQ(data.seq, 1u);
+            ASSERT_TRUE(data.start_to_close_timeout.has_value());
+            EXPECT_EQ(data.start_to_close_timeout.value(),
+                       std::chrono::milliseconds{30000});
+            EXPECT_FALSE(data.schedule_to_close_timeout.has_value());
+            // Should have one argument
+            ASSERT_EQ(data.args.size(), 1u);
+            EXPECT_EQ(std::any_cast<std::string>(data.args[0]), "world");
+        }
+    }
+    EXPECT_TRUE(found_schedule);
+}
+
+TEST(WorkflowInstanceTest, ResolveActivityCompletedYieldsWorkflowResult) {
+    auto def =
+        WorkflowDefinition::create<ActivityWorkflow>("ActivityWorkflow")
+            .run(&ActivityWorkflow::run)
+            .build();
+
+    auto [inst, start_cmds] = create_started_instance(def);
+
+    // The workflow is now suspended waiting for the activity to complete.
+    // Resolve the activity with a successful result.
+    WorkflowInstance::ActivityResolution resolution;
+    resolution.seq = 1;
+    resolution.status = WorkflowInstance::ResolutionStatus::kCompleted;
+    resolution.result = std::any(std::string("Hello, world!"));
+
+    std::vector<WorkflowInstance::Job> resolve_jobs = {
+        {.type = WorkflowInstance::JobType::kResolveActivity,
+         .data = std::any(resolution)},
+    };
+
+    auto cmds = inst->activate(resolve_jobs);
+
+    // After the activity resolves with success, the workflow run()
+    // should complete, which means run_top_level emits kCompleteWorkflow
+    // (or similar). At minimum, no kFailWorkflow should be emitted.
+    bool found_fail = false;
+    for (const auto& cmd : cmds) {
+        if (cmd.type == WorkflowInstance::CommandType::kFailWorkflow) {
+            found_fail = true;
+        }
+    }
+    EXPECT_FALSE(found_fail);
+}
+
+TEST(WorkflowInstanceTest, ResolveActivityFailedCausesWorkflowFailure) {
+    auto def =
+        WorkflowDefinition::create<ActivityWorkflow>("ActivityWorkflow")
+            .run(&ActivityWorkflow::run)
+            .build();
+
+    auto [inst, start_cmds] = create_started_instance(def);
+
+    // Resolve with failure status.
+    WorkflowInstance::ActivityResolution resolution;
+    resolution.seq = 1;
+    resolution.status = WorkflowInstance::ResolutionStatus::kFailed;
+    resolution.failure = "Activity greet failed: connection timeout";
+
+    std::vector<WorkflowInstance::Job> resolve_jobs = {
+        {.type = WorkflowInstance::JobType::kResolveActivity,
+         .data = std::any(resolution)},
+    };
+
+    auto cmds = inst->activate(resolve_jobs);
+
+    // The schedule_activity implementation throws ActivityFailureException
+    // on kFailed resolution. run_top_level catches it and emits kFailWorkflow.
+    bool found_fail = false;
+    for (const auto& cmd : cmds) {
+        if (cmd.type == WorkflowInstance::CommandType::kFailWorkflow) {
+            found_fail = true;
+            auto msg = std::any_cast<std::string>(cmd.data);
+            // The failure message should contain the original error.
+            EXPECT_FALSE(msg.empty());
+        }
+    }
+    EXPECT_TRUE(found_fail);
+}
+
+TEST(WorkflowInstanceTest, ResolveActivityCancelledCausesWorkflowFailure) {
+    auto def =
+        WorkflowDefinition::create<ActivityWorkflow>("ActivityWorkflow")
+            .run(&ActivityWorkflow::run)
+            .build();
+
+    auto [inst, start_cmds] = create_started_instance(def);
+
+    // Resolve with cancelled status.
+    WorkflowInstance::ActivityResolution resolution;
+    resolution.seq = 1;
+    resolution.status = WorkflowInstance::ResolutionStatus::kCancelled;
+    resolution.failure = "Activity was cancelled";
+
+    std::vector<WorkflowInstance::Job> resolve_jobs = {
+        {.type = WorkflowInstance::JobType::kResolveActivity,
+         .data = std::any(resolution)},
+    };
+
+    auto cmds = inst->activate(resolve_jobs);
+
+    // The schedule_activity implementation throws CanceledFailureException
+    // on kCancelled resolution. Since the workflow itself was not cancelled
+    // (cancellation_source_ not triggered), run_top_level treats it as a
+    // normal exception and emits kFailWorkflow.
+    bool found_fail = false;
+    for (const auto& cmd : cmds) {
+        if (cmd.type == WorkflowInstance::CommandType::kFailWorkflow) {
+            found_fail = true;
+        }
+    }
+    EXPECT_TRUE(found_fail);
 }

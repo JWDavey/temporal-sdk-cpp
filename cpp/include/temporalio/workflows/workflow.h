@@ -2,6 +2,7 @@
 
 /// @file Workflow ambient API for accessing workflow context from user code.
 
+#include <any>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -9,9 +10,11 @@
 #include <random>
 #include <stop_token>
 #include <string>
+#include <vector>
 
 #include <temporalio/async_/cancellation_token.h>
 #include <temporalio/async_/task.h>
+#include <temporalio/workflows/activity_options.h>
 #include <temporalio/workflows/workflow_info.h>
 
 namespace temporalio::workflows {
@@ -77,6 +80,24 @@ public:
     /// Get the current update info (only valid inside an update handler).
     static const WorkflowUpdateInfo* current_update_info();
 
+    /// Execute an activity by name with multiple arguments.
+    /// Returns the activity result as std::any.
+    static async_::Task<std::any> execute_activity(
+        const std::string& activity_type,
+        std::vector<std::any> args,
+        const ActivityOptions& options);
+
+    /// Execute an activity by name with a single argument.
+    static async_::Task<std::any> execute_activity(
+        const std::string& activity_type,
+        std::any arg,
+        const ActivityOptions& options);
+
+    /// Execute an activity by name with no arguments.
+    static async_::Task<std::any> execute_activity(
+        const std::string& activity_type,
+        const ActivityOptions& options);
+
     // Workflow cannot be instantiated.
     Workflow() = delete;
 };
@@ -114,6 +135,15 @@ public:
         std::function<bool()> condition,
         std::optional<std::chrono::milliseconds> timeout,
         std::stop_token ct) = 0;
+
+    /// Schedule an activity and return a Task that completes when the activity
+    /// finishes. The returned std::any holds the activity result on success.
+    /// Throws ActivityFailureException on failure or CanceledFailureException
+    /// on cancellation.
+    virtual async_::Task<std::any> schedule_activity(
+        const std::string& activity_type,
+        std::vector<std::any> args,
+        const ActivityOptions& options) = 0;
 
     /// Get the current workflow context. Returns nullptr if not in workflow.
     static WorkflowContext* current() noexcept { return current_; }

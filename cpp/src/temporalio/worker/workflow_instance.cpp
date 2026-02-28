@@ -246,6 +246,83 @@ async_::Task<void> WorkflowInstance::start_timer(
     co_await tcs->task();
 }
 
+async_::Task<std::any> WorkflowInstance::schedule_activity(
+    const std::string& activity_type,
+    std::vector<std::any> args,
+    const workflows::ActivityOptions& options) {
+    // Allocate a sequence number for this activity.
+    uint32_t seq = ++activity_counter_;
+
+    // Create a TCS with resume callback routed through the scheduler.
+    auto tcs = std::make_shared<async_::TaskCompletionSource<std::any>>(
+        make_resume_callback());
+    pending_activities_[seq] = tcs;
+
+    // Build the ScheduleActivity command data.
+    ScheduleActivityData data;
+    data.seq = seq;
+    data.activity_type = activity_type;
+    data.task_queue = options.task_queue.value_or(info_.task_queue);
+    data.args = args;
+    data.schedule_to_close_timeout = options.schedule_to_close_timeout;
+    data.schedule_to_start_timeout = options.schedule_to_start_timeout;
+    data.start_to_close_timeout = options.start_to_close_timeout;
+    data.heartbeat_timeout = options.heartbeat_timeout;
+    data.retry_policy = options.retry_policy;
+    data.cancellation_type = options.cancellation_type;
+    data.activity_id = options.activity_id;
+
+    // Emit the ScheduleActivity command.
+    Command cmd;
+    cmd.type = CommandType::kScheduleActivity;
+    cmd.seq = seq;
+    cmd.data = std::move(data);
+    commands_.push_back(std::move(cmd));
+
+    // If a cancellation token was provided, register a callback to cancel
+    // the activity when cancellation is requested.
+    std::stop_token ct = options.cancellation_token.value_or(std::stop_token{});
+    std::optional<std::stop_callback<std::function<void()>>> cancel_cb;
+    if (ct.stop_possible()) {
+        cancel_cb.emplace(ct, std::function<void()>([this, seq, tcs]() {
+            // Remove from pending and cancel the TCS.
+            pending_activities_.erase(seq);
+            tcs->try_set_exception(std::make_exception_ptr(
+                exceptions::CanceledFailureException("Activity cancelled")));
+
+            // Emit a RequestCancelActivity command so the server knows.
+            Command cancel_cmd;
+            cancel_cmd.type = CommandType::kRequestCancelActivity;
+            cancel_cmd.seq = seq;
+            cancel_cmd.data = RequestCancelActivityData{seq};
+            commands_.push_back(std::move(cancel_cmd));
+        }));
+    }
+
+    // Suspend until the activity resolves (handle_resolve_activity resolves
+    // the TCS) or cancellation triggers.
+    auto resolution_any = co_await tcs->task();
+
+    // Inspect the resolution and return result or throw.
+    const auto& resolution =
+        std::any_cast<const ActivityResolution&>(resolution_any);
+    switch (resolution.status) {
+        case ResolutionStatus::kCompleted:
+            co_return resolution.result;
+        case ResolutionStatus::kFailed:
+            throw exceptions::ActivityFailureException(
+                resolution.failure, activity_type,
+                std::to_string(seq));
+        case ResolutionStatus::kCancelled:
+            throw exceptions::CanceledFailureException(
+                resolution.failure.empty() ? "Activity cancelled"
+                                           : resolution.failure);
+    }
+
+    // Should not reach here
+    throw std::runtime_error("Unknown activity resolution status");
+}
+
 async_::Task<bool> WorkflowInstance::register_condition(
     std::function<bool()> condition,
     std::optional<std::chrono::milliseconds> timeout,

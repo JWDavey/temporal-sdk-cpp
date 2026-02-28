@@ -86,7 +86,16 @@ public:
         co_return false;
     }
 
+    temporalio::async_::Task<std::any> schedule_activity(
+        const std::string& /*activity_type*/,
+        std::vector<std::any> /*args*/,
+        const ActivityOptions& /*options*/) override {
+        schedule_activity_called_ = true;
+        co_return std::any{};
+    }
+
     // Test helpers
+    bool schedule_activity_called_ = false;
     bool start_timer_called_ = false;
     bool register_condition_called_ = false;
     WorkflowInfo info_;

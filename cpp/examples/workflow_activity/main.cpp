@@ -1,0 +1,166 @@
+/// @file workflow_activity/main.cpp
+/// @brief Example: workflow calls an activity and returns the result.
+///
+/// This example demonstrates the complete Temporal lifecycle:
+///   1. Define an activity (greet) that takes a name and returns a greeting.
+///   2. Define a workflow that calls Workflow::execute_activity().
+///   3. Connect a client, create a worker, start the workflow, get the result.
+///
+/// Mirrors the C# SimpleBench pattern. Requires a running Temporal server
+/// at localhost:7233 (e.g., via `temporal server start-dev`).
+
+#include <temporalio/activities/activity.h>
+#include <temporalio/async_/task.h>
+#include <temporalio/client/temporal_client.h>
+#include <temporalio/client/workflow_options.h>
+#include <temporalio/version.h>
+#include <temporalio/worker/temporal_worker.h>
+#include <temporalio/workflows/activity_options.h>
+#include <temporalio/workflows/workflow.h>
+#include <temporalio/workflows/workflow_definition.h>
+
+#include <any>
+#include <chrono>
+#include <coroutine>
+#include <exception>
+#include <iostream>
+#include <stop_token>
+#include <string>
+#include <thread>
+
+// Simple synchronous driver for a lazy Task.
+template <typename T>
+T run_sync(temporalio::async_::Task<T> task) {
+    auto handle = task.handle();
+    if (handle && !handle.done()) {
+        handle.resume();
+    }
+    return task.await_resume();
+}
+
+void run_sync(temporalio::async_::Task<void> task) {
+    auto handle = task.handle();
+    if (handle && !handle.done()) {
+        handle.resume();
+    }
+    task.await_resume();
+}
+
+// -- Activity definition --
+
+// A simple greeting activity: takes a name, returns "Hello, <name>!".
+temporalio::async_::Task<std::string> greet(std::string name) {
+    std::cout << "  [activity] greet(\"" << name << "\") executing\n";
+    co_return "Hello, " + name + "!";
+}
+
+// -- Workflow definition --
+
+// A workflow that calls the greet activity and returns its result.
+class GreetingWorkflow {
+public:
+    temporalio::async_::Task<std::any> run(std::vector<std::any> args) {
+        // Extract the name argument (passed as string).
+        std::string name = "World";
+        if (!args.empty()) {
+            try {
+                name = std::any_cast<std::string>(args[0]);
+            } catch (const std::bad_any_cast&) {
+                // Use default
+            }
+        }
+
+        // Call the activity with a 30-second start-to-close timeout.
+        namespace wf = temporalio::workflows;
+        wf::ActivityOptions opts;
+        opts.start_to_close_timeout = std::chrono::seconds(30);
+
+        auto result = co_await wf::Workflow::execute_activity(
+            "greet",
+            std::any(name),
+            opts);
+
+        co_return result;
+    }
+};
+
+// The async entry point.
+temporalio::async_::Task<void> run(std::stop_token shutdown_token) {
+    namespace client = temporalio::client;
+    namespace worker = temporalio::worker;
+
+    // Step 1: Connect to Temporal.
+    auto tc = co_await client::TemporalClient::connect(
+        client::TemporalClientConnectOptions{
+            .connection = {.target_host = "localhost:7233"},
+            .client = {.ns = "default"},
+        });
+
+    std::cout << "Connected to Temporal server.\n";
+
+    // Step 2: Build activity and workflow definitions.
+    auto greet_activity =
+        temporalio::activities::ActivityDefinition::create("greet", &greet);
+
+    auto greeting_workflow =
+        temporalio::workflows::WorkflowDefinition::create<GreetingWorkflow>(
+            "GreetingWorkflow")
+            .run(&GreetingWorkflow::run)
+            .build();
+
+    // Step 3: Configure and start the worker on a background thread.
+    worker::TemporalWorkerOptions worker_opts;
+    worker_opts.task_queue = "workflow-activity-queue";
+    worker_opts.activities.push_back(greet_activity);
+    worker_opts.workflows.push_back(greeting_workflow);
+
+    std::stop_source worker_stop;
+    worker::TemporalWorker w(tc, worker_opts);
+
+    std::jthread worker_thread([&w, token = worker_stop.get_token()]() {
+        std::cout << "Worker started on task queue: workflow-activity-queue\n";
+        try {
+            run_sync(w.execute_async(token));
+        } catch (const std::exception& e) {
+            std::cerr << "Worker error: " << e.what() << "\n";
+        }
+    });
+
+    // Step 4: Start a workflow execution.
+    client::WorkflowOptions wf_opts;
+    wf_opts.id = "greeting-workflow-id";
+    wf_opts.task_queue = "workflow-activity-queue";
+
+    auto handle = co_await tc->start_workflow(
+        "GreetingWorkflow",
+        "\"Temporal\"",  // JSON-encoded string argument
+        wf_opts);
+
+    std::cout << "Started workflow: " << handle.id()
+              << " (run " << handle.run_id().value_or("") << ")\n";
+
+    // Step 5: Wait for the workflow result.
+    auto result = co_await handle.get_result();
+    std::cout << "Workflow result: " << result << "\n";
+
+    // Step 6: Shut down the worker.
+    worker_stop.request_stop();
+    worker_thread.join();
+    std::cout << "Worker shut down.\n";
+}
+
+int main() {
+    std::cout << "Temporal C++ SDK v" << temporalio::version() << "\n";
+    std::cout << "Workflow Activity example\n\n";
+
+    std::stop_source stop;
+
+    try {
+        run_sync(run(stop.get_token()));
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
+
+    return 0;
+}

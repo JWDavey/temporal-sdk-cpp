@@ -20,3 +20,24 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/activity_worker/main.cpp")
     target_link_libraries(example_activity_worker PRIVATE temporalio)
     temporalio_set_compiler_warnings(example_activity_worker)
 endif()
+
+# ── Workflow Activity ──────────────────────────────────────────────────────
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/workflow_activity/main.cpp")
+    add_executable(example_workflow_activity workflow_activity/main.cpp)
+    target_link_libraries(example_workflow_activity PRIVATE temporalio)
+    temporalio_set_compiler_warnings(example_workflow_activity)
+endif()
+
+# ── Timer Workflow ─────────────────────────────────────────────────────────
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/timer_workflow/main.cpp")
+    add_executable(example_timer_workflow timer_workflow/main.cpp)
+    target_link_libraries(example_timer_workflow PRIVATE temporalio)
+    temporalio_set_compiler_warnings(example_timer_workflow)
+endif()
+
+# ── Update Workflow ────────────────────────────────────────────────────────
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/update_workflow/main.cpp")
+    add_executable(example_update_workflow update_workflow/main.cpp)
+    target_link_libraries(example_update_workflow PRIVATE temporalio)
+    temporalio_set_compiler_warnings(example_update_workflow)
+endif()

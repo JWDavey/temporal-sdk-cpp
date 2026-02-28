@@ -287,8 +287,65 @@ void convert_commands_to_proto(
                 break;
             }
             case WorkflowInstance::CommandType::kScheduleActivity: {
+                auto data = std::any_cast<
+                    WorkflowInstance::ScheduleActivityData>(cmd.data);
                 auto* sa = proto_cmd->mutable_schedule_activity();
-                sa->set_seq(cmd.seq);
+                sa->set_seq(data.seq);
+                sa->set_activity_type(data.activity_type);
+                sa->set_task_queue(data.task_queue);
+                if (data.activity_id.has_value()) {
+                    sa->set_activity_id(*data.activity_id);
+                }
+                for ([[maybe_unused]] const auto& arg : data.args) {
+                    // Args are stored as protobuf Payloads (from encoding)
+                    // or as raw values. For now, add empty payloads as
+                    // placeholders; the DataConverter integration will
+                    // populate these properly.
+                    sa->add_arguments();
+                }
+                if (data.schedule_to_close_timeout.has_value()) {
+                    set_duration_millis(
+                        sa->mutable_schedule_to_close_timeout(),
+                        *data.schedule_to_close_timeout);
+                }
+                if (data.schedule_to_start_timeout.has_value()) {
+                    set_duration_millis(
+                        sa->mutable_schedule_to_start_timeout(),
+                        *data.schedule_to_start_timeout);
+                }
+                if (data.start_to_close_timeout.has_value()) {
+                    set_duration_millis(
+                        sa->mutable_start_to_close_timeout(),
+                        *data.start_to_close_timeout);
+                }
+                if (data.heartbeat_timeout.has_value()) {
+                    set_duration_millis(
+                        sa->mutable_heartbeat_timeout(),
+                        *data.heartbeat_timeout);
+                }
+                if (data.retry_policy.has_value()) {
+                    auto* rp = sa->mutable_retry_policy();
+                    set_duration_millis(
+                        rp->mutable_initial_interval(),
+                        data.retry_policy->initial_interval);
+                    rp->set_backoff_coefficient(
+                        data.retry_policy->backoff_coefficient);
+                    if (data.retry_policy->maximum_interval.has_value()) {
+                        set_duration_millis(
+                            rp->mutable_maximum_interval(),
+                            *data.retry_policy->maximum_interval);
+                    }
+                    rp->set_maximum_attempts(
+                        data.retry_policy->maximum_attempts);
+                    for (const auto& err_type :
+                         data.retry_policy->non_retryable_error_types) {
+                        rp->add_non_retryable_error_types(err_type);
+                    }
+                }
+                sa->set_cancellation_type(
+                    static_cast<coresdk::workflow_commands::
+                        ActivityCancellationType>(
+                        static_cast<int>(data.cancellation_type)));
                 break;
             }
             case WorkflowInstance::CommandType::kScheduleLocalActivity: {
@@ -297,8 +354,10 @@ void convert_commands_to_proto(
                 break;
             }
             case WorkflowInstance::CommandType::kRequestCancelActivity: {
+                auto data = std::any_cast<
+                    WorkflowInstance::RequestCancelActivityData>(cmd.data);
                 auto* rca = proto_cmd->mutable_request_cancel_activity();
-                rca->set_seq(cmd.seq);
+                rca->set_seq(data.seq);
                 break;
             }
             case WorkflowInstance::CommandType::kStartChildWorkflow: {

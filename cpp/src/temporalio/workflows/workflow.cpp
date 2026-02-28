@@ -82,4 +82,29 @@ async_::Task<bool> Workflow::wait_condition(
         std::move(condition), timeout, std::move(ct));
 }
 
+async_::Task<std::any> Workflow::execute_activity(
+    const std::string& activity_type,
+    std::vector<std::any> args,
+    const ActivityOptions& options) {
+    co_return co_await require_context().schedule_activity(
+        activity_type, std::move(args), options);
+}
+
+async_::Task<std::any> Workflow::execute_activity(
+    const std::string& activity_type,
+    std::any arg,
+    const ActivityOptions& options) {
+    std::vector<std::any> args;
+    args.push_back(std::move(arg));
+    co_return co_await require_context().schedule_activity(
+        activity_type, std::move(args), options);
+}
+
+async_::Task<std::any> Workflow::execute_activity(
+    const std::string& activity_type,
+    const ActivityOptions& options) {
+    co_return co_await require_context().schedule_activity(
+        activity_type, {}, options);
+}
+
 }  // namespace temporalio::workflows

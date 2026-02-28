@@ -9,7 +9,7 @@ execute asynchronous, long-running business logic in a scalable and resilient wa
 operations. It wraps the shared Rust `sdk-core` engine via a C FFI bridge, providing fully asynchronous coroutine-based
 APIs.
 
-> **Status: Pre-release** -- The SDK builds and all 678 unit tests pass on MSVC 2022 (Windows). Integration testing
+> **Status: Pre-release** -- The SDK builds and all 646 unit tests pass on MSVC 2022 (Windows). Integration testing
 > against a live Temporal server is in progress. The API is not yet stable.
 
 ## Features
@@ -17,7 +17,7 @@ APIs.
 - **C++20 coroutines** -- `co_await` / `co_return` for all async operations (workflows, client calls, timers)
 - **Lazy `Task<T>`** with symmetric transfer for efficient coroutine chaining
 - **Deterministic `CoroutineScheduler`** for workflow replay (single-threaded FIFO, matching the Temporal execution model)
-- **Full Temporal API coverage** -- workflows, activities, signals, queries, updates, child workflows, Nexus operations
+- **Full Temporal API coverage** -- workflows, activities (with `execute_activity()`), signals, queries, updates, child workflows, Nexus operations
 - **Type-safe workflow invocation** via template deduction on member function pointers
 - **Interceptor chains** for both client-side and worker-side operations
 - **Protobuf integration** -- 74 Temporal API proto files auto-generated at build time
@@ -120,7 +120,7 @@ cpp/
     CompilerWarnings.cmake         # Warning flags
     ProtobufGenerate.cmake         # Proto code generation
 
-  include/temporalio/              # Public headers (33 files)
+  include/temporalio/              # Public headers (34 files)
     async_/                        # Task<T>, CancellationToken, CoroutineScheduler, TaskCompletionSource
     client/                        # TemporalClient, TemporalConnection, WorkflowHandle
       interceptors/                # IClientInterceptor, ClientOutboundInterceptor
@@ -133,7 +133,7 @@ cpp/
     worker/                        # TemporalWorker, WorkflowInstance
       interceptors/                # IWorkerInterceptor, inbound/outbound interceptors
       internal/                    # ActivityWorker, WorkflowWorker, NexusWorker
-    workflows/                     # Workflow ambient API, WorkflowDefinition builder
+    workflows/                     # Workflow ambient API, WorkflowDefinition builder, ActivityOptions
 
   src/temporalio/                  # Private implementation (25 .cpp + 8 .h)
     bridge/                        # Rust FFI wrappers (SafeHandle, CallScope, interop)
@@ -142,8 +142,29 @@ cpp/
     opentelemetry/                 # TracingInterceptor
     diagnostics/                   # CustomMetricMeter
 
-  tests/                           # Google Test suite (37 files, 678 tests)
-  examples/                        # hello_world, signal_workflow, activity_worker
+  tests/                           # Google Test suite (37 files, 646 tests)
+  examples/                        # 6 examples (see Examples section below)
+```
+
+## Examples
+
+Six examples in `cpp/examples/` demonstrate key Temporal patterns. All require a running Temporal server (`temporal server start-dev`).
+
+| Example | What it demonstrates |
+|---------|---------------------|
+| `hello_world` | Connect to Temporal, start a workflow, get the result |
+| `signal_workflow` | Send signals to a running workflow, query workflow state |
+| `activity_worker` | Define activities and register them with a worker |
+| `workflow_activity` | **Full lifecycle**: workflow calls `execute_activity()`, worker runs both |
+| `timer_workflow` | Deterministic timers (`delay()`), conditions (`wait_condition()`), `utc_now()` |
+| `update_workflow` | Update handlers with validators, queries, signals, graceful handler draining |
+
+```bash
+# Build all examples
+cmake --build cpp/build
+
+# Run an example (requires: temporal server start-dev)
+./cpp/build/example_workflow_activity
 ```
 
 ## Architecture
@@ -207,7 +228,7 @@ ctest --test-dir cpp/build --output-on-failure
 ctest --test-dir cpp/build --output-on-failure --verbose
 ```
 
-678 unit tests cover:
+646 unit tests cover:
 - Async primitives (Task, CancellationToken, CoroutineScheduler, TaskCompletionSource)
 - Bridge layer (CallScope, SafeHandle)
 - Client (connection options, interceptors, workflow handle)

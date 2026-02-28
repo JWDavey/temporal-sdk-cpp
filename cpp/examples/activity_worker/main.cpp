@@ -19,7 +19,7 @@
 #include <coroutine>
 #include <exception>
 #include <iostream>
-#include <stop_source>
+#include <stop_token>
 #include <string>
 
 // Simple synchronous driver for a lazy Task.
