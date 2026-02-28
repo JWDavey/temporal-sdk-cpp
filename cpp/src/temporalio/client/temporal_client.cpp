@@ -13,166 +13,26 @@
 
 #include "temporalio/bridge/client.h"
 
+#include <temporal/api/workflowservice/v1/request_response.pb.h>
+#include <temporal/api/common/v1/message.pb.h>
+#include <temporal/api/taskqueue/v1/message.pb.h>
+#include <temporal/api/workflow/v1/message.pb.h>
+#include <temporal/api/enums/v1/workflow.pb.h>
+#include <google/protobuf/duration.pb.h>
+
 namespace temporalio::client {
 
-// ── Protobuf wire-format helpers ────────────────────────────────────────────
-// Minimal protobuf encoding for building gRPC requests without generated
-// types.  Once protobuf code generation is wired (Task #4), these helpers
-// should be replaced by proper message SerializeToString() calls.
+namespace {
 
-namespace proto {
-
-/// Encode a varint into the buffer.
-inline void encode_varint(std::vector<uint8_t>& buf, uint64_t value) {
-    while (value > 0x7F) {
-        buf.push_back(static_cast<uint8_t>((value & 0x7F) | 0x80));
-        value >>= 7;
-    }
-    buf.push_back(static_cast<uint8_t>(value));
-}
-
-/// Encode a length-delimited field (wire type 2).
-inline void encode_string_field(std::vector<uint8_t>& buf,
-                                uint32_t field_number,
-                                const std::string& value) {
-    if (value.empty()) return;
-    // Tag = (field_number << 3) | 2
-    encode_varint(buf, (static_cast<uint64_t>(field_number) << 3) | 2);
-    encode_varint(buf, value.size());
-    buf.insert(buf.end(), value.begin(), value.end());
-}
-
-/// Encode a sub-message field (wire type 2).
-inline void encode_message_field(std::vector<uint8_t>& buf,
-                                 uint32_t field_number,
-                                 const std::vector<uint8_t>& msg) {
-    if (msg.empty()) return;
-    encode_varint(buf, (static_cast<uint64_t>(field_number) << 3) | 2);
-    encode_varint(buf, msg.size());
-    buf.insert(buf.end(), msg.begin(), msg.end());
-}
-
-/// Encode a varint field (wire type 0).
-inline void encode_varint_field(std::vector<uint8_t>& buf,
-                                uint32_t field_number, uint64_t value) {
-    if (value == 0) return;
-    encode_varint(buf, (static_cast<uint64_t>(field_number) << 3) | 0);
-    encode_varint(buf, value);
-}
-
-/// Encode a bytes field (wire type 2) from raw bytes.
-inline void encode_bytes_field(std::vector<uint8_t>& buf,
-                               uint32_t field_number,
-                               const std::vector<uint8_t>& value) {
-    if (value.empty()) return;
-    encode_varint(buf, (static_cast<uint64_t>(field_number) << 3) | 2);
-    encode_varint(buf, value.size());
-    buf.insert(buf.end(), value.begin(), value.end());
-}
-
-// --- Field numbers from temporal API protobuf definitions ---
-// StartWorkflowExecutionRequest:
-//   1: namespace, 2: workflow_id, 3: workflow_type (sub-msg, field 1 = name),
-//   4: task_queue (sub-msg, field 1 = name), 5: input (Payloads),
-//   6: workflow_execution_timeout, 7: workflow_run_timeout,
-//   8: workflow_task_timeout, 9: identity, 10: request_id,
-//   11: workflow_id_reuse_policy, 12: retry_policy, 13: cron_schedule
-//
-// SignalWorkflowExecutionRequest:
-//   1: namespace, 2: workflow_execution (sub-msg: 1=workflow_id, 2=run_id),
-//   3: signal_name, 4: input (Payloads), 5: identity, 6: request_id
-//
-// QueryWorkflowRequest:
-//   1: namespace, 2: execution (sub-msg), 3: query (sub-msg: 1=query_type,
-//   2=query_args)
-//
-// RequestCancelWorkflowExecutionRequest:
-//   1: namespace, 2: workflow_execution (sub-msg), 3: identity, 4: request_id,
-//   5: first_execution_run_id, 6: reason
-//
-// TerminateWorkflowExecutionRequest:
-//   1: namespace, 2: workflow_execution (sub-msg), 3: reason, 5: identity
-//
-// ListWorkflowExecutionsRequest:
-//   1: namespace, 2: page_size, 3: next_page_token, 4: query
-//
-// CountWorkflowExecutionsRequest:
-//   1: namespace, 2: query
-
-/// Build a WorkflowExecution sub-message.
-inline std::vector<uint8_t> workflow_execution(
-    const std::string& workflow_id,
-    const std::string& run_id = {}) {
-    std::vector<uint8_t> buf;
-    encode_string_field(buf, 1, workflow_id);
-    encode_string_field(buf, 2, run_id);
-    return buf;
-}
-
-/// Build a WorkflowType sub-message.
-inline std::vector<uint8_t> workflow_type(const std::string& name) {
-    std::vector<uint8_t> buf;
-    encode_string_field(buf, 1, name);
-    return buf;
-}
-
-/// Build a TaskQueue sub-message.
-inline std::vector<uint8_t> task_queue(const std::string& name) {
-    std::vector<uint8_t> buf;
-    encode_string_field(buf, 1, name);
-    return buf;
-}
-
-/// Build a WorkflowQuery sub-message.
-inline std::vector<uint8_t> workflow_query(const std::string& query_type) {
-    std::vector<uint8_t> buf;
-    encode_string_field(buf, 1, query_type);
-    return buf;
-}
-
-/// Convert duration to protobuf Duration (google.protobuf.Duration).
-/// Duration: field 1 = seconds (int64), field 2 = nanos (int32).
-inline std::vector<uint8_t> duration_msg(std::chrono::milliseconds ms) {
-    std::vector<uint8_t> buf;
+/// Set a google::protobuf::Duration from a std::chrono::milliseconds value.
+void set_duration(google::protobuf::Duration* d, std::chrono::milliseconds ms) {
     auto secs = std::chrono::duration_cast<std::chrono::seconds>(ms);
-    auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                     ms - secs)
-                     .count();
-    if (secs.count() > 0) {
-        encode_varint_field(buf, 1, static_cast<uint64_t>(secs.count()));
-    }
-    if (nanos > 0) {
-        encode_varint_field(buf, 2, static_cast<uint64_t>(nanos));
-    }
-    return buf;
+    auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(ms - secs);
+    d->set_seconds(secs.count());
+    d->set_nanos(static_cast<int32_t>(nanos.count()));
 }
 
-/// Build a Payloads message wrapping a single JSON-encoded payload.
-/// Payloads: field 1 = repeated Payload
-/// Payload: field 1 = map<string,bytes> metadata, field 2 = bytes data
-/// Map entries: field 1 = string key, field 2 = bytes value
-inline std::vector<uint8_t> json_payloads(const std::string& json_data) {
-    // Build metadata map entry: "encoding" -> "json/plain"
-    std::vector<uint8_t> map_entry;
-    encode_string_field(map_entry, 1, "encoding");
-    std::string encoding_value = "json/plain";
-    encode_bytes_field(map_entry, 2,
-                       std::vector<uint8_t>(encoding_value.begin(),
-                                            encoding_value.end()));
-
-    // Build the Payload sub-message
-    std::vector<uint8_t> payload;
-    encode_message_field(payload, 1, map_entry);  // metadata map entry
-    std::vector<uint8_t> data_bytes(json_data.begin(), json_data.end());
-    encode_bytes_field(payload, 2, data_bytes);  // data
-
-    // Build the Payloads wrapper
-    std::vector<uint8_t> payloads;
-    encode_message_field(payloads, 1, payload);  // payloads[0]
-    return payloads;
-}
-
-}  // namespace proto
+}  // namespace
 
 // ── Impl ────────────────────────────────────────────────────────────────────
 
@@ -273,111 +133,68 @@ async_::Task<WorkflowHandle> TemporalClient::start_workflow(
         throw std::runtime_error("Not connected to Temporal server");
     }
 
-    // Build StartWorkflowExecutionRequest
-    std::vector<uint8_t> request;
-    proto::encode_string_field(request, 1, impl_->options.ns);
-    proto::encode_string_field(request, 2, options.id);
-    proto::encode_message_field(request, 3,
-                                proto::workflow_type(workflow_type));
-    proto::encode_message_field(request, 4,
-                                proto::task_queue(options.task_queue));
+    // Build StartWorkflowExecutionRequest using generated protobuf types
+    temporal::api::workflowservice::v1::StartWorkflowExecutionRequest req;
+    req.set_namespace_(impl_->options.ns);
+    req.set_workflow_id(options.id);
+    req.mutable_workflow_type()->set_name(workflow_type);
+    req.mutable_task_queue()->set_name(options.task_queue);
 
-    // Input payload (field 5) - wrap args as a Payloads message
+    // Input payload
     if (!args.empty()) {
-        proto::encode_message_field(request, 5,
-                                    proto::json_payloads(args));
+        auto* payload = req.mutable_input()->add_payloads();
+        (*payload->mutable_metadata())["encoding"] = "json/plain";
+        payload->set_data(args);
     }
 
-    // Timeouts (fields 6, 7, 8)
+    // Timeouts
     if (options.execution_timeout) {
-        proto::encode_message_field(
-            request, 6, proto::duration_msg(*options.execution_timeout));
+        set_duration(req.mutable_workflow_execution_timeout(),
+                     *options.execution_timeout);
     }
     if (options.run_timeout) {
-        proto::encode_message_field(
-            request, 7, proto::duration_msg(*options.run_timeout));
+        set_duration(req.mutable_workflow_run_timeout(),
+                     *options.run_timeout);
     }
     if (options.task_timeout) {
-        proto::encode_message_field(
-            request, 8, proto::duration_msg(*options.task_timeout));
+        set_duration(req.mutable_workflow_task_timeout(),
+                     *options.task_timeout);
     }
 
-    // Identity (field 9)
-    auto identity =
-        impl_->connection->options().identity.value_or("cpp-sdk");
-    proto::encode_string_field(request, 9, identity);
+    // Identity
+    req.set_identity(impl_->connection->options().identity.value_or("cpp-sdk"));
 
-    // Request ID (field 10)
+    // Request ID
     if (options.request_id) {
-        proto::encode_string_field(request, 10, *options.request_id);
+        req.set_request_id(*options.request_id);
     }
 
-    // Workflow ID reuse policy (field 11)
+    // Workflow ID reuse policy
     if (options.id_reuse_policy !=
         common::WorkflowIdReusePolicy::kUnspecified) {
-        proto::encode_varint_field(request, 11,
-                                   static_cast<uint64_t>(
-                                       options.id_reuse_policy));
+        req.set_workflow_id_reuse_policy(
+            static_cast<temporal::api::enums::v1::WorkflowIdReusePolicy>(
+                static_cast<int>(options.id_reuse_policy)));
     }
 
-    // Cron schedule (field 13)
+    // Cron schedule
     if (options.cron_schedule) {
-        proto::encode_string_field(request, 13, *options.cron_schedule);
+        req.set_cron_schedule(*options.cron_schedule);
     }
 
     bridge::RpcCallOptions rpc_opts;
     rpc_opts.service = TemporalCoreRpcService::Workflow;
     rpc_opts.rpc = "StartWorkflowExecution";
-    rpc_opts.request = std::move(request);
+    std::string serialized = req.SerializeAsString();
+    rpc_opts.request = std::vector<uint8_t>(serialized.begin(), serialized.end());
     rpc_opts.retry = true;
 
     auto response = co_await rpc_call(*client, std::move(rpc_opts));
 
-    // Parse run_id from StartWorkflowExecutionResponse (field 1 = run_id)
-    // For now, extract the first string field from the response.
-    std::string run_id;
-    size_t pos = 0;
-    while (pos < response.size()) {
-        uint64_t tag = 0;
-        // Decode varint tag
-        int shift = 0;
-        while (pos < response.size()) {
-            uint8_t b = response[pos++];
-            tag |= static_cast<uint64_t>(b & 0x7F) << shift;
-            shift += 7;
-            if ((b & 0x80) == 0) break;
-        }
-        uint32_t field_num = static_cast<uint32_t>(tag >> 3);
-        uint32_t wire_type = static_cast<uint32_t>(tag & 0x7);
-
-        if (wire_type == 2) {
-            // Length-delimited
-            uint64_t len = 0;
-            shift = 0;
-            while (pos < response.size()) {
-                uint8_t b = response[pos++];
-                len |= static_cast<uint64_t>(b & 0x7F) << shift;
-                shift += 7;
-                if ((b & 0x80) == 0) break;
-            }
-            if (field_num == 1 && pos + len <= response.size()) {
-                run_id.assign(
-                    reinterpret_cast<const char*>(response.data() + pos),
-                    static_cast<size_t>(len));
-            }
-            pos += static_cast<size_t>(len);
-        } else if (wire_type == 0) {
-            // Varint - skip
-            while (pos < response.size() && (response[pos] & 0x80)) ++pos;
-            if (pos < response.size()) ++pos;
-        } else if (wire_type == 1) {
-            pos += 8;  // 64-bit
-        } else if (wire_type == 5) {
-            pos += 4;  // 32-bit
-        } else {
-            break;  // Unknown wire type
-        }
-    }
+    // Parse response
+    temporal::api::workflowservice::v1::StartWorkflowExecutionResponse resp;
+    resp.ParseFromArray(response.data(), static_cast<int>(response.size()));
+    std::string run_id = resp.run_id();
 
     co_return WorkflowHandle(shared_from_this(), options.id,
                               run_id.empty() ? std::nullopt
@@ -400,28 +217,26 @@ async_::Task<void> TemporalClient::signal_workflow(
         throw std::runtime_error("Not connected to Temporal server");
     }
 
-    // Build SignalWorkflowExecutionRequest
-    std::vector<uint8_t> request;
-    proto::encode_string_field(request, 1, impl_->options.ns);
-    proto::encode_message_field(
-        request, 2,
-        proto::workflow_execution(workflow_id, run_id.value_or("")));
-    proto::encode_string_field(request, 3, signal_name);
-
-    // Signal input (field 4) - wrap args as a Payloads message
-    if (!args.empty()) {
-        proto::encode_message_field(request, 4,
-                                    proto::json_payloads(args));
+    // Build SignalWorkflowExecutionRequest using generated protobuf types
+    temporal::api::workflowservice::v1::SignalWorkflowExecutionRequest req;
+    req.set_namespace_(impl_->options.ns);
+    req.mutable_workflow_execution()->set_workflow_id(workflow_id);
+    if (run_id) {
+        req.mutable_workflow_execution()->set_run_id(*run_id);
     }
-
-    auto identity =
-        impl_->connection->options().identity.value_or("cpp-sdk");
-    proto::encode_string_field(request, 5, identity);
+    req.set_signal_name(signal_name);
+    if (!args.empty()) {
+        auto* payload = req.mutable_input()->add_payloads();
+        (*payload->mutable_metadata())["encoding"] = "json/plain";
+        payload->set_data(args);
+    }
+    req.set_identity(impl_->connection->options().identity.value_or("cpp-sdk"));
 
     bridge::RpcCallOptions rpc_opts;
     rpc_opts.service = TemporalCoreRpcService::Workflow;
     rpc_opts.rpc = "SignalWorkflowExecution";
-    rpc_opts.request = std::move(request);
+    std::string serialized = req.SerializeAsString();
+    rpc_opts.request = std::vector<uint8_t>(serialized.begin(), serialized.end());
     rpc_opts.retry = true;
 
     co_await rpc_call(*client, std::move(rpc_opts));
@@ -435,25 +250,31 @@ async_::Task<std::string> TemporalClient::query_workflow(
         throw std::runtime_error("Not connected to Temporal server");
     }
 
-    // Build QueryWorkflowRequest
-    std::vector<uint8_t> request;
-    proto::encode_string_field(request, 1, impl_->options.ns);
-    proto::encode_message_field(
-        request, 2,
-        proto::workflow_execution(workflow_id, run_id.value_or("")));
-    proto::encode_message_field(request, 3,
-                                proto::workflow_query(query_type));
+    // Build QueryWorkflowRequest using generated protobuf types
+    temporal::api::workflowservice::v1::QueryWorkflowRequest req;
+    req.set_namespace_(impl_->options.ns);
+    req.mutable_execution()->set_workflow_id(workflow_id);
+    if (run_id) {
+        req.mutable_execution()->set_run_id(*run_id);
+    }
+    req.mutable_query()->set_query_type(query_type);
 
     bridge::RpcCallOptions rpc_opts;
     rpc_opts.service = TemporalCoreRpcService::Workflow;
     rpc_opts.rpc = "QueryWorkflow";
-    rpc_opts.request = std::move(request);
+    std::string serialized = req.SerializeAsString();
+    rpc_opts.request = std::vector<uint8_t>(serialized.begin(), serialized.end());
     rpc_opts.retry = true;
 
     auto response = co_await rpc_call(*client, std::move(rpc_opts));
-    // Return raw response bytes as string for now.
-    // When protobuf types are available, this should deserialize the
-    // QueryWorkflowResponse and extract the query result payloads.
+
+    // Parse response and extract result
+    temporal::api::workflowservice::v1::QueryWorkflowResponse resp;
+    resp.ParseFromArray(response.data(), static_cast<int>(response.size()));
+    if (resp.has_query_result() && resp.query_result().payloads_size() > 0) {
+        const auto& payload = resp.query_result().payloads(0);
+        co_return std::string(payload.data().begin(), payload.data().end());
+    }
     co_return std::string(response.begin(), response.end());
 }
 
@@ -464,21 +285,20 @@ async_::Task<void> TemporalClient::cancel_workflow(
         throw std::runtime_error("Not connected to Temporal server");
     }
 
-    // Build RequestCancelWorkflowExecutionRequest
-    std::vector<uint8_t> request;
-    proto::encode_string_field(request, 1, impl_->options.ns);
-    proto::encode_message_field(
-        request, 2,
-        proto::workflow_execution(workflow_id, run_id.value_or("")));
-
-    auto identity =
-        impl_->connection->options().identity.value_or("cpp-sdk");
-    proto::encode_string_field(request, 3, identity);
+    // Build RequestCancelWorkflowExecutionRequest using generated protobuf types
+    temporal::api::workflowservice::v1::RequestCancelWorkflowExecutionRequest req;
+    req.set_namespace_(impl_->options.ns);
+    req.mutable_workflow_execution()->set_workflow_id(workflow_id);
+    if (run_id) {
+        req.mutable_workflow_execution()->set_run_id(*run_id);
+    }
+    req.set_identity(impl_->connection->options().identity.value_or("cpp-sdk"));
 
     bridge::RpcCallOptions rpc_opts;
     rpc_opts.service = TemporalCoreRpcService::Workflow;
     rpc_opts.rpc = "RequestCancelWorkflowExecution";
-    rpc_opts.request = std::move(request);
+    std::string serialized = req.SerializeAsString();
+    rpc_opts.request = std::vector<uint8_t>(serialized.begin(), serialized.end());
     rpc_opts.retry = true;
 
     co_await rpc_call(*client, std::move(rpc_opts));
@@ -492,25 +312,23 @@ async_::Task<void> TemporalClient::terminate_workflow(
         throw std::runtime_error("Not connected to Temporal server");
     }
 
-    // Build TerminateWorkflowExecutionRequest
-    std::vector<uint8_t> request;
-    proto::encode_string_field(request, 1, impl_->options.ns);
-    proto::encode_message_field(
-        request, 2,
-        proto::workflow_execution(workflow_id, run_id.value_or("")));
-
-    if (reason) {
-        proto::encode_string_field(request, 3, *reason);
+    // Build TerminateWorkflowExecutionRequest using generated protobuf types
+    temporal::api::workflowservice::v1::TerminateWorkflowExecutionRequest req;
+    req.set_namespace_(impl_->options.ns);
+    req.mutable_workflow_execution()->set_workflow_id(workflow_id);
+    if (run_id) {
+        req.mutable_workflow_execution()->set_run_id(*run_id);
     }
-
-    auto identity =
-        impl_->connection->options().identity.value_or("cpp-sdk");
-    proto::encode_string_field(request, 5, identity);
+    if (reason) {
+        req.set_reason(*reason);
+    }
+    req.set_identity(impl_->connection->options().identity.value_or("cpp-sdk"));
 
     bridge::RpcCallOptions rpc_opts;
     rpc_opts.service = TemporalCoreRpcService::Workflow;
     rpc_opts.rpc = "TerminateWorkflowExecution";
-    rpc_opts.request = std::move(request);
+    std::string serialized = req.SerializeAsString();
+    rpc_opts.request = std::vector<uint8_t>(serialized.begin(), serialized.end());
     rpc_opts.retry = true;
 
     co_await rpc_call(*client, std::move(rpc_opts));
@@ -523,35 +341,40 @@ async_::Task<std::vector<WorkflowExecution>> TemporalClient::list_workflows(
         throw std::runtime_error("Not connected to Temporal server");
     }
 
-    // Build ListWorkflowExecutionsRequest
-    std::vector<uint8_t> request;
-    proto::encode_string_field(request, 1, impl_->options.ns);
-
+    // Build ListWorkflowExecutionsRequest using generated protobuf types
+    temporal::api::workflowservice::v1::ListWorkflowExecutionsRequest req;
+    req.set_namespace_(impl_->options.ns);
     if (options.page_size) {
-        proto::encode_varint_field(request, 2,
-                                   static_cast<uint64_t>(*options.page_size));
+        req.set_page_size(*options.page_size);
     }
-
     if (options.query) {
-        proto::encode_string_field(request, 4, *options.query);
+        req.set_query(*options.query);
     }
 
     bridge::RpcCallOptions rpc_opts;
     rpc_opts.service = TemporalCoreRpcService::Workflow;
     rpc_opts.rpc = "ListWorkflowExecutions";
-    rpc_opts.request = std::move(request);
+    std::string serialized = req.SerializeAsString();
+    rpc_opts.request = std::vector<uint8_t>(serialized.begin(), serialized.end());
     rpc_opts.retry = true;
 
     auto response = co_await rpc_call(*client, std::move(rpc_opts));
 
-    // Parse ListWorkflowExecutionsResponse.
-    // Field 1 = repeated WorkflowExecutionInfo (sub-messages).
-    // WorkflowExecutionInfo field 1 = execution (WorkflowExecution:
-    //   field 1 = workflow_id, field 2 = run_id), field 2 = type
-    //   (WorkflowType: field 1 = name).
-    // Full deserialization requires protobuf types; return raw list for now.
-    // When protobuf is available, replace with proper deserialization.
+    temporal::api::workflowservice::v1::ListWorkflowExecutionsResponse resp;
+    resp.ParseFromArray(response.data(), static_cast<int>(response.size()));
+
     std::vector<WorkflowExecution> results;
+    for (const auto& exec_info : resp.executions()) {
+        WorkflowExecution exec;
+        if (exec_info.has_execution()) {
+            exec.workflow_id = exec_info.execution().workflow_id();
+            exec.run_id = exec_info.execution().run_id();
+        }
+        if (exec_info.has_type()) {
+            exec.workflow_type = exec_info.type().name();
+        }
+        results.push_back(std::move(exec));
+    }
     co_return results;
 }
 
@@ -562,68 +385,27 @@ async_::Task<WorkflowExecutionCount> TemporalClient::count_workflows(
         throw std::runtime_error("Not connected to Temporal server");
     }
 
-    // Build CountWorkflowExecutionsRequest
-    std::vector<uint8_t> request;
-    proto::encode_string_field(request, 1, impl_->options.ns);
-
+    // Build CountWorkflowExecutionsRequest using generated protobuf types
+    temporal::api::workflowservice::v1::CountWorkflowExecutionsRequest req;
+    req.set_namespace_(impl_->options.ns);
     if (options.query) {
-        proto::encode_string_field(request, 2, *options.query);
+        req.set_query(*options.query);
     }
 
     bridge::RpcCallOptions rpc_opts;
     rpc_opts.service = TemporalCoreRpcService::Workflow;
     rpc_opts.rpc = "CountWorkflowExecutions";
-    rpc_opts.request = std::move(request);
+    std::string serialized = req.SerializeAsString();
+    rpc_opts.request = std::vector<uint8_t>(serialized.begin(), serialized.end());
     rpc_opts.retry = true;
 
     auto response = co_await rpc_call(*client, std::move(rpc_opts));
 
-    // Parse CountWorkflowExecutionsResponse (field 1 = count, int64).
+    temporal::api::workflowservice::v1::CountWorkflowExecutionsResponse resp;
+    resp.ParseFromArray(response.data(), static_cast<int>(response.size()));
+
     WorkflowExecutionCount result;
-    size_t pos = 0;
-    while (pos < response.size()) {
-        uint64_t tag = 0;
-        int shift = 0;
-        while (pos < response.size()) {
-            uint8_t b = response[pos++];
-            tag |= static_cast<uint64_t>(b & 0x7F) << shift;
-            shift += 7;
-            if ((b & 0x80) == 0) break;
-        }
-        uint32_t field_num = static_cast<uint32_t>(tag >> 3);
-        uint32_t wire_type = static_cast<uint32_t>(tag & 0x7);
-
-        if (wire_type == 0) {
-            uint64_t value = 0;
-            shift = 0;
-            while (pos < response.size()) {
-                uint8_t b = response[pos++];
-                value |= static_cast<uint64_t>(b & 0x7F) << shift;
-                shift += 7;
-                if ((b & 0x80) == 0) break;
-            }
-            if (field_num == 1) {
-                result.count = static_cast<int64_t>(value);
-            }
-        } else if (wire_type == 2) {
-            uint64_t len = 0;
-            shift = 0;
-            while (pos < response.size()) {
-                uint8_t b = response[pos++];
-                len |= static_cast<uint64_t>(b & 0x7F) << shift;
-                shift += 7;
-                if ((b & 0x80) == 0) break;
-            }
-            pos += static_cast<size_t>(len);
-        } else if (wire_type == 1) {
-            pos += 8;
-        } else if (wire_type == 5) {
-            pos += 4;
-        } else {
-            break;
-        }
-    }
-
+    result.count = resp.count();
     co_return result;
 }
 

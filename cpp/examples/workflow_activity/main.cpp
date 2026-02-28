@@ -22,12 +22,12 @@
 
 #include <any>
 #include <chrono>
-#include <coroutine>
 #include <exception>
 #include <iostream>
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <vector>
 
 using temporalio::async_::run_task_sync;
 
@@ -69,79 +69,78 @@ public:
     }
 };
 
-// The async entry point.
-temporalio::async_::Task<void> run(std::stop_token shutdown_token) {
-    namespace client = temporalio::client;
-    namespace worker = temporalio::worker;
-
-    // Step 1: Connect to Temporal.
-    auto tc = co_await client::TemporalClient::connect(
-        client::TemporalClientConnectOptions{
-            .connection = {.target_host = "localhost:7233"},
-            .client = {.ns = "default"},
-        });
-
-    std::cout << "Connected to Temporal server.\n";
-
-    // Step 2: Build activity and workflow definitions.
-    auto greet_activity =
-        temporalio::activities::ActivityDefinition::create("greet", &greet);
-
-    auto greeting_workflow =
-        temporalio::workflows::WorkflowDefinition::create<GreetingWorkflow>(
-            "GreetingWorkflow")
-            .run(&GreetingWorkflow::run)
-            .build();
-
-    // Step 3: Configure and start the worker on a background thread.
-    worker::TemporalWorkerOptions worker_opts;
-    worker_opts.task_queue = "workflow-activity-queue";
-    worker_opts.activities.push_back(greet_activity);
-    worker_opts.workflows.push_back(greeting_workflow);
-
-    std::stop_source worker_stop;
-    worker::TemporalWorker w(tc, worker_opts);
-
-    std::jthread worker_thread([&w, token = worker_stop.get_token()]() {
-        std::cout << "Worker started on task queue: workflow-activity-queue\n";
-        try {
-            run_task_sync(w.execute_async(token));
-        } catch (const std::exception& e) {
-            std::cerr << "Worker error: " << e.what() << "\n";
-        }
-    });
-
-    // Step 4: Start a workflow execution.
-    client::WorkflowOptions wf_opts;
-    wf_opts.id = "greeting-workflow-id";
-    wf_opts.task_queue = "workflow-activity-queue";
-
-    auto handle = co_await tc->start_workflow(
-        "GreetingWorkflow",
-        "\"Temporal\"",  // JSON-encoded string argument
-        wf_opts);
-
-    std::cout << "Started workflow: " << handle.id()
-              << " (run " << handle.run_id().value_or("") << ")\n";
-
-    // Step 5: Wait for the workflow result.
-    auto result = co_await handle.get_result();
-    std::cout << "Workflow result: " << result << "\n";
-
-    // Step 6: Shut down the worker.
-    worker_stop.request_stop();
-    worker_thread.join();
-    std::cout << "Worker shut down.\n";
-}
-
 int main() {
     std::cout << "Temporal C++ SDK v" << temporalio::version() << "\n";
     std::cout << "Workflow Activity example\n\n";
 
-    std::stop_source stop;
+    namespace client = temporalio::client;
+    namespace worker = temporalio::worker;
 
     try {
-        run_task_sync(run(stop.get_token()));
+        // Step 1: Connect to Temporal.
+        // Each run_task_sync call drives a coroutine to completion, blocking
+        // the main thread. Between calls, the main thread is free.
+        auto tc = run_task_sync(client::TemporalClient::connect(
+            client::TemporalClientConnectOptions{
+                .connection = {.target_host = "localhost:7233"},
+                .client = {.ns = "default"},
+            }));
+
+        std::cout << "Connected to Temporal server.\n";
+
+        // Step 2: Build activity and workflow definitions.
+        auto greet_activity =
+            temporalio::activities::ActivityDefinition::create("greet", &greet);
+
+        auto greeting_workflow =
+            temporalio::workflows::WorkflowDefinition::create<GreetingWorkflow>(
+                "GreetingWorkflow")
+                .run(&GreetingWorkflow::run)
+                .build();
+
+        // Step 3: Configure and start the worker on a background thread.
+        worker::TemporalWorkerOptions worker_opts;
+        worker_opts.task_queue = "workflow-activity-queue";
+        worker_opts.activities.push_back(greet_activity);
+        worker_opts.workflows.push_back(greeting_workflow);
+
+        std::stop_source worker_stop;
+        worker::TemporalWorker w(tc, worker_opts);
+
+        std::jthread worker_thread([&w, token = worker_stop.get_token()]() {
+            std::cout << "Worker started on task queue: workflow-activity-queue\n";
+            try {
+                run_task_sync(w.execute_async(token));
+            } catch (const std::exception& e) {
+                std::cerr << "Worker error: " << e.what() << "\n";
+            }
+        });
+
+        // Step 4: Start a workflow execution.
+        client::WorkflowOptions wf_opts;
+        wf_opts.id = "greeting-workflow-id";
+        wf_opts.task_queue = "workflow-activity-queue";
+
+        auto handle = run_task_sync(tc->start_workflow(
+            "GreetingWorkflow",
+            "\"Temporal\"",  // JSON-encoded string argument
+            wf_opts));
+
+        std::cout << "Started workflow: " << handle.id()
+                  << " (run " << handle.run_id().value_or("") << ")\n";
+
+        // Step 5: Wait for the workflow result.
+        auto result = run_task_sync(handle.get_result());
+        std::cout << "Workflow result: " << result << "\n";
+
+        // Step 6: Shut down the worker.
+        // IMPORTANT: request_stop and join are called on the main thread
+        // (not on a Rust callback thread), so they don't starve the tokio
+        // runtime that the bridge uses for poll cancellation callbacks.
+        worker_stop.request_stop();
+        worker_thread.join();
+        std::cout << "Worker shut down.\n";
+
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

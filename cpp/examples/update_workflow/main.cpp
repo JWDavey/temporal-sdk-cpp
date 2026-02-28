@@ -21,7 +21,6 @@
 #include <temporalio/workflows/workflow.h>
 #include <temporalio/workflows/workflow_definition.h>
 
-#include <coroutine>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
@@ -107,78 +106,6 @@ make_shopping_cart_definition() {
         .build();
 }
 
-// The async entry point.
-temporalio::async_::Task<void> run() {
-    namespace client = temporalio::client;
-    namespace worker = temporalio::worker;
-
-    // Step 1: Connect to Temporal.
-    auto tc = co_await client::TemporalClient::connect(
-        client::TemporalClientConnectOptions{
-            .connection = {.target_host = "localhost:7233"},
-        });
-
-    std::cout << "Connected to Temporal server.\n";
-
-    // Step 2: Build the workflow definition.
-    auto cart_workflow = make_shopping_cart_definition();
-
-    // Step 3: Configure and create the worker.
-    worker::TemporalWorkerOptions opts;
-    opts.task_queue = "update-example-queue";
-    opts.workflows.push_back(cart_workflow);
-    opts.max_concurrent_workflow_tasks = 10;
-
-    std::cout << "Starting worker on task queue: " << opts.task_queue << "\n"
-              << "  Workflows: " << opts.workflows.size() << "\n"
-              << "  Updates:   " << cart_workflow->updates().size() << "\n"
-              << "  Queries:   " << cart_workflow->queries().size() << "\n"
-              << "  Signals:   " << cart_workflow->signals().size() << "\n";
-
-    worker::TemporalWorker w(tc, opts);
-
-    // Step 4: Run the worker in a background thread.
-    std::stop_source worker_stop;
-    std::jthread worker_thread([&w, token = worker_stop.get_token()]() {
-        try {
-            run_task_sync(w.execute_async(token));
-        } catch (const std::exception& e) {
-            std::cerr << "Worker error: " << e.what() << "\n";
-        }
-    });
-
-    // Step 5: Start the workflow.
-    client::WorkflowOptions wf_opts;
-    wf_opts.id = "shopping-cart-workflow";
-    wf_opts.task_queue = "update-example-queue";
-
-    auto handle = co_await tc->start_workflow("ShoppingCart", "{}", wf_opts);
-    std::cout << "\nStarted workflow: " << handle.id() << "\n";
-
-    // Step 6: Send updates to add items.
-    // NOTE: When WorkflowHandle::update() is available, you would use:
-    //   auto count = co_await handle.update("add_item", "\"apple\"");
-    // For now, we demonstrate the workflow definition pattern and use
-    // queries to observe state changes from signals.
-
-    // Step 7: Query the item count.
-    auto count = co_await handle.query("get_item_count");
-    std::cout << "Item count (before adds): " << count << "\n";
-
-    // Step 8: Signal checkout to complete the workflow.
-    co_await handle.signal("checkout");
-    std::cout << "Sent checkout signal.\n";
-
-    // Step 9: Get the final result.
-    auto result = co_await handle.get_result();
-    std::cout << "Workflow result: " << result << "\n";
-
-    // Step 10: Shut down the worker.
-    worker_stop.request_stop();
-    worker_thread.join();
-    std::cout << "Worker shut down.\n";
-}
-
 int main() {
     std::cout << "Temporal C++ SDK v" << temporalio::version() << "\n";
     std::cout << "Update Workflow example\n\n";
@@ -190,8 +117,82 @@ int main() {
               << ", queries: " << def->queries().size()
               << ", signals: " << def->signals().size() << ")\n\n";
 
+    namespace client = temporalio::client;
+    namespace worker = temporalio::worker;
+
     try {
-        run_task_sync(run());
+        // Step 1: Connect to Temporal.
+        // Each run_task_sync call drives a coroutine to completion, blocking
+        // the main thread. Between calls, the main thread is free.
+        auto tc = run_task_sync(client::TemporalClient::connect(
+            client::TemporalClientConnectOptions{
+                .connection = {.target_host = "localhost:7233"},
+            }));
+
+        std::cout << "Connected to Temporal server.\n";
+
+        // Step 2: Build the workflow definition.
+        auto cart_workflow = make_shopping_cart_definition();
+
+        // Step 3: Configure and create the worker.
+        worker::TemporalWorkerOptions opts;
+        opts.task_queue = "update-example-queue";
+        opts.workflows.push_back(cart_workflow);
+        opts.max_concurrent_workflow_tasks = 10;
+
+        std::cout << "Starting worker on task queue: " << opts.task_queue << "\n"
+                  << "  Workflows: " << opts.workflows.size() << "\n"
+                  << "  Updates:   " << cart_workflow->updates().size() << "\n"
+                  << "  Queries:   " << cart_workflow->queries().size() << "\n"
+                  << "  Signals:   " << cart_workflow->signals().size() << "\n";
+
+        worker::TemporalWorker w(tc, opts);
+
+        // Step 4: Run the worker in a background thread.
+        std::stop_source worker_stop;
+        std::jthread worker_thread([&w, token = worker_stop.get_token()]() {
+            try {
+                run_task_sync(w.execute_async(token));
+            } catch (const std::exception& e) {
+                std::cerr << "Worker error: " << e.what() << "\n";
+            }
+        });
+
+        // Step 5: Start the workflow.
+        client::WorkflowOptions wf_opts;
+        wf_opts.id = "shopping-cart-workflow";
+        wf_opts.task_queue = "update-example-queue";
+
+        auto handle = run_task_sync(
+            tc->start_workflow("ShoppingCart", "{}", wf_opts));
+        std::cout << "\nStarted workflow: " << handle.id() << "\n";
+
+        // Step 6: Send updates to add items.
+        // NOTE: When WorkflowHandle::update() is available, you would use:
+        //   auto count = run_task_sync(handle.update("add_item", "\"apple\""));
+        // For now, we demonstrate the workflow definition pattern and use
+        // queries to observe state changes from signals.
+
+        // Step 7: Query the item count.
+        auto count = run_task_sync(handle.query("get_item_count"));
+        std::cout << "Item count (before adds): " << count << "\n";
+
+        // Step 8: Signal checkout to complete the workflow.
+        run_task_sync(handle.signal("checkout"));
+        std::cout << "Sent checkout signal.\n";
+
+        // Step 9: Get the final result.
+        auto result = run_task_sync(handle.get_result());
+        std::cout << "Workflow result: " << result << "\n";
+
+        // Step 10: Shut down the worker.
+        // IMPORTANT: request_stop and join are called on the main thread
+        // (not on a Rust callback thread), so they don't starve the tokio
+        // runtime that the bridge uses for poll cancellation callbacks.
+        worker_stop.request_stop();
+        worker_thread.join();
+        std::cout << "Worker shut down.\n";
+
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

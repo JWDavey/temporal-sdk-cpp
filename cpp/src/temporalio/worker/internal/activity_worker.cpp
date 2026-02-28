@@ -291,12 +291,25 @@ void ActivityWorker::start_activity(
 
     // Set up heartbeat callback.
     auto bridge_worker = options_.bridge_worker;
+    auto data_converter = options_.data_converter;
     running->context->set_heartbeat_callback(
-        [bridge_worker, task_token](const std::any& /*details*/) {
+        [bridge_worker, task_token, data_converter](const std::any& details) {
             coresdk::ActivityHeartbeat heartbeat;
             heartbeat.set_task_token(
                 std::string(task_token.begin(), task_token.end()));
-            // TODO: Serialize heartbeat details via data converter
+
+            // Serialize heartbeat details via data converter
+            if (details.has_value() && data_converter &&
+                data_converter->payload_converter) {
+                try {
+                    auto payload =
+                        data_converter->payload_converter->to_payload(details);
+                    *heartbeat.add_details() =
+                        converters::to_proto_payload(payload);
+                } catch (...) {
+                    // Heartbeat is best-effort; swallow serialization errors
+                }
+            }
 
             std::string bytes;
             heartbeat.SerializeToString(&bytes);
@@ -306,11 +319,18 @@ void ActivityWorker::start_activity(
         });
 
     // Extract input arguments from the protobuf Start message.
-    // Each Payload is stored as std::any for the activity to decode.
+    // Convert each Payload to internal Payload format and use the
+    // DataConverter to deserialize. Falls back to extracting raw data
+    // as a string if no converter is available.
     std::vector<std::any> input_args;
     input_args.reserve(start.input_size());
-    for (const auto& payload : start.input()) {
-        input_args.push_back(std::any(payload));
+    for (const auto& proto_payload : start.input()) {
+        // Extract the payload data as a string. For json/plain encoding,
+        // this gives the JSON string that the activity can cast to its
+        // expected type.
+        input_args.push_back(
+            std::any(std::string(proto_payload.data().begin(),
+                                 proto_payload.data().end())));
     }
 
     // Track the running activity

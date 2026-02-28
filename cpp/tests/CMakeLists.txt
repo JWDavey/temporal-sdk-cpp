@@ -74,6 +74,17 @@ target_include_directories(temporalio_tests
 
 temporalio_set_compiler_warnings(temporalio_tests)
 
+# ── Copy Rust bridge DLL to test output directory (Windows) ─────────────────
+if(WIN32 AND TARGET temporalio_rust_bridge)
+    add_custom_command(TARGET temporalio_tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:temporalio_rust_bridge>"
+            "$<TARGET_FILE_DIR:temporalio_tests>"
+        COMMENT "Copying Rust bridge DLL to test directory"
+        VERBATIM
+    )
+endif()
+
 # ── Register tests with CTest ──────────────────────────────────────────────
 gtest_discover_tests(temporalio_tests
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

@@ -1,6 +1,7 @@
 #include "temporalio/worker/temporal_worker.h"
 
 #include <atomic>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -16,12 +17,18 @@
 #include "temporalio/bridge/call_scope.h"
 #include "temporalio/bridge/client.h"
 #include "temporalio/bridge/worker.h"
+#include "temporalio/converters/data_converter.h"
 
 namespace temporalio::worker {
 
 TemporalWorker::TemporalWorker(std::shared_ptr<client::TemporalClient> client,
                                TemporalWorkerOptions options)
     : client_(std::move(client)), options_(std::move(options)) {
+    // Default data converter if none provided
+    if (!options_.data_converter) {
+        options_.data_converter = std::make_shared<converters::DataConverter>(
+            converters::DataConverter::default_instance());
+    }
     if (options_.task_queue.empty()) {
         throw std::invalid_argument(
             "TemporalWorkerOptions must have a task_queue set");
@@ -259,20 +266,31 @@ async_::Task<void> TemporalWorker::execute_async(
     // 3. Notify activity worker of shutdown (for graceful drain)
     // 4. Wait for all poll loops to complete (they drain remaining work)
     // 5. Finalize shutdown on the bridge
+    //
+    // IMPORTANT: Poll threads are detached (fire-and-forget) rather than
+    // joined. Two constraints drive this:
+    //   (a) After co_await validate_async(), this coroutine resumes on a
+    //       Rust callback thread. We must NOT block it (done_cv.wait would
+    //       starve the tokio runtime).
+    //   (b) co_await all_done_tcs resumes this coroutine on the LAST poll
+    //       thread that signaled. Joining poll threads from a poll thread
+    //       would deadlock (thread joining itself).
+    // Detached threads solve both: co_await suspends (no thread blocked),
+    // and no join is attempted. Thread lambdas capture shared_ptrs so all
+    // shared state outlives the threads.
 
-    // Shared state to signal the coroutine when all poll threads finish.
     auto all_done_tcs =
         std::make_shared<async_::TaskCompletionSource<void>>();
     auto remaining = std::make_shared<std::atomic<size_t>>(0);
     auto first_exception = std::make_shared<std::exception_ptr>(nullptr);
     auto exception_mutex = std::make_shared<std::mutex>();
 
-    // Helper: run a poll task on a thread and signal when done.
-    auto launch_poll_thread = [&](async_::Task<void> task)
-        -> std::jthread {
-        return std::jthread([all_done_tcs, remaining, first_exception,
-                             exception_mutex,
-                             t = std::move(task)]() mutable {
+    // Helper: launch a detached thread to drive a poll task.
+    auto launch_poll = [&](async_::Task<void> task) {
+        remaining->fetch_add(1, std::memory_order_relaxed);
+        std::thread([all_done_tcs, remaining, first_exception,
+                     exception_mutex,
+                     t = std::move(task)]() mutable {
             try {
                 async_::run_task_sync(std::move(t));
             } catch (...) {
@@ -284,29 +302,21 @@ async_::Task<void> TemporalWorker::execute_async(
             if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 all_done_tcs->try_set_result();
             }
-        });
+        }).detach();
     };
 
-    std::vector<std::jthread> poll_threads;
-
     if (workflow_worker_) {
-        remaining->fetch_add(1, std::memory_order_relaxed);
-        poll_threads.push_back(
-            launch_poll_thread(workflow_worker_->execute_async()));
+        launch_poll(workflow_worker_->execute_async());
     }
     if (activity_worker_) {
-        remaining->fetch_add(1, std::memory_order_relaxed);
-        poll_threads.push_back(
-            launch_poll_thread(activity_worker_->execute_async()));
+        launch_poll(activity_worker_->execute_async());
     }
     if (nexus_worker_) {
-        remaining->fetch_add(1, std::memory_order_relaxed);
-        poll_threads.push_back(
-            launch_poll_thread(nexus_worker_->execute_async()));
+        launch_poll(nexus_worker_->execute_async());
     }
 
-    // If no sub-workers, nothing to do
-    if (poll_threads.empty()) {
+    // If no sub-workers were launched, nothing to do
+    if (remaining->load(std::memory_order_relaxed) == 0) {
         co_return;
     }
 
@@ -324,15 +334,10 @@ async_::Task<void> TemporalWorker::execute_async(
         }
     });
 
-    // Wait for all poll threads to complete.
+    // Wait for all poll threads to complete. This co_await suspends the
+    // coroutine (freeing the current thread) until the last poll thread
+    // signals completion.
     co_await all_done_tcs->task();
-
-    // Join all threads (they should already be done since TCS was signaled).
-    for (auto& t : poll_threads) {
-        if (t.joinable()) {
-            t.join();
-        }
-    }
 
     // Propagate the first exception from any poll loop.
     if (*first_exception) {

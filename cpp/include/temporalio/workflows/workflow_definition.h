@@ -185,14 +185,27 @@ public:
                 }
             } else if constexpr (sizeof...(Args) == 1) {
                 using Arg0 = std::tuple_element_t<0, std::tuple<Args...>>;
-                auto arg0 = std::any_cast<Arg0>(args.at(0));
-                if constexpr (std::is_void_v<R>) {
-                    co_await (self->*method)(std::move(arg0));
-                    co_return std::any{};
+                if constexpr (std::is_same_v<Arg0, std::vector<std::any>>) {
+                    // When the run method takes std::vector<std::any>,
+                    // pass the entire args vector directly (raw access).
+                    if constexpr (std::is_void_v<R>) {
+                        co_await (self->*method)(std::move(args));
+                        co_return std::any{};
+                    } else {
+                        auto result =
+                            co_await (self->*method)(std::move(args));
+                        co_return std::any(std::move(result));
+                    }
                 } else {
-                    auto result =
+                    auto arg0 = std::any_cast<Arg0>(args.at(0));
+                    if constexpr (std::is_void_v<R>) {
                         co_await (self->*method)(std::move(arg0));
-                    co_return std::any(std::move(result));
+                        co_return std::any{};
+                    } else {
+                        auto result =
+                            co_await (self->*method)(std::move(arg0));
+                        co_return std::any(std::move(result));
+                    }
                 }
             }
         };

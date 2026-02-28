@@ -206,8 +206,39 @@ async_::Task<void> NexusWorker::execute_async() {
                 input.assign(p.begin(), p.end());
             }
 
-            handle_start_operation(task_token, service_name,
-                                   operation_name, handler, input);
+            // Build a fully-populated OperationStartContext from the protobuf
+            nexus::OperationStartContext start_ctx;
+            start_ctx.service = service_name;
+            start_ctx.operation = operation_name;
+
+            // Populate headers from the request
+            for (const auto& [key, value] : request.header()) {
+                start_ctx.headers[key] = value;
+            }
+
+            // Populate StartOperation-specific fields
+            start_ctx.request_id = start_op.request_id().empty()
+                ? std::nullopt
+                : std::optional<std::string>(start_op.request_id());
+            start_ctx.callback_url = start_op.callback().empty()
+                ? std::nullopt
+                : std::optional<std::string>(start_op.callback());
+
+            // Populate callback headers
+            for (const auto& [key, value] : start_op.callback_header()) {
+                start_ctx.callback_headers[key] = value;
+            }
+
+            // Populate inbound links
+            for (const auto& link : start_op.links()) {
+                nexus::NexusLink nlink;
+                nlink.uri = link.url();
+                nlink.type = link.type();
+                start_ctx.inbound_links.push_back(std::move(nlink));
+            }
+
+            handle_start_operation(task_token, handler, input,
+                                   std::move(start_ctx));
 
         } else if (request.has_cancel_operation()) {
             const auto& cancel_op = request.cancel_operation();
@@ -240,10 +271,9 @@ async_::Task<void> NexusWorker::execute_async() {
 
 void NexusWorker::handle_start_operation(
     const std::vector<uint8_t>& task_token,
-    const std::string& service_name,
-    const std::string& operation_name,
     nexus::INexusOperationHandler* handler,
-    const std::vector<uint8_t>& input) {
+    const std::vector<uint8_t>& input,
+    nexus::OperationStartContext start_ctx) {
     // Create a running task state
     auto running = std::make_shared<RunningNexusTask>();
     running->task_token = task_token;
@@ -262,22 +292,19 @@ void NexusWorker::handle_start_operation(
 
     running->thread = std::jthread([this, running, handler, client, ns,
                                     task_queue, bridge_worker,
-                                    service_name, operation_name,
                                     task_token, input,
+                                    start_ctx = std::move(start_ctx),
                                     token_key = std::string(
                                         task_token.begin(),
-                                        task_token.end())]() {
+                                        task_token.end())]() mutable {
         // Set up the Nexus operation execution context
         nexus::NexusOperationInfo op_info;
         op_info.ns = ns;
         op_info.task_queue = task_queue;
 
-        nexus::OperationStartContext start_ctx;
-        start_ctx.service = service_name;
-        start_ctx.operation = operation_name;
-
         nexus::NexusOperationExecutionContext exec_ctx(
-            nexus::OperationContext{service_name, operation_name, {}},
+            nexus::OperationContext{start_ctx.service, start_ctx.operation,
+                                   start_ctx.headers},
             std::move(op_info), client);
         nexus::ContextScope scope(&exec_ctx);
 
@@ -326,6 +353,10 @@ void NexusWorker::handle_start_operation(
                     result.async_operation_token);
             }
 
+            // NOTE: Outbound links are not yet supported by the
+            // StartOperationResponse proto. When the proto adds a links
+            // field, populate it from start_ctx.outbound_links here.
+
             std::string bytes;
             completion.SerializeToString(&bytes);
             std::vector<uint8_t> completion_bytes(
@@ -335,8 +366,13 @@ void NexusWorker::handle_start_operation(
                     std::span<const uint8_t>(completion_bytes),
                     [](std::string) {});
             }
+        } catch (const nexus::OperationException& e) {
+            // Handler threw a typed Nexus error -- send with proper error type
+            send_nexus_error_completion(
+                bridge_worker, task_token,
+                e.error_type_string(), e.what());
         } catch (const std::exception& e) {
-            // Handler threw an exception -- send error completion
+            // Handler threw a generic exception -- send INTERNAL error
             send_nexus_error_completion(
                 bridge_worker, task_token,
                 "INTERNAL", e.what());

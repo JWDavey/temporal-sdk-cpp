@@ -21,7 +21,6 @@
 #include <temporalio/workflows/workflow_definition.h>
 
 #include <chrono>
-#include <coroutine>
 #include <exception>
 #include <iostream>
 #include <string>
@@ -112,72 +111,6 @@ make_timer_definition() {
 }
 
 // ---------------------------------------------------------------------------
-// Async entry point
-// ---------------------------------------------------------------------------
-
-temporalio::async_::Task<void> run() {
-    namespace client = temporalio::client;
-    namespace worker = temporalio::worker;
-
-    // Step 1: Connect to Temporal.
-    auto tc = co_await client::TemporalClient::connect(
-        client::TemporalClientConnectOptions{
-            .connection = {.target_host = "localhost:7233"},
-        });
-    std::cout << "Connected to Temporal server.\n";
-
-    // Step 2: Build the workflow definition.
-    auto timer_workflow = make_timer_definition();
-
-    // Step 3: Configure and create the worker.
-    worker::TemporalWorkerOptions opts;
-    opts.task_queue = "timer-example-queue";
-    opts.workflows.push_back(timer_workflow);
-    opts.max_concurrent_workflow_tasks = 10;
-
-    std::cout << "Starting worker on task queue: " << opts.task_queue << "\n";
-
-    worker::TemporalWorker w(tc, opts);
-
-    // Step 4: Run the worker in a background thread.
-    std::stop_source worker_stop;
-    std::jthread worker_thread([&w, token = worker_stop.get_token()]() {
-        try {
-            run_task_sync(w.execute_async(token));
-        } catch (const std::exception& e) {
-            std::cerr << "Worker error: " << e.what() << "\n";
-        }
-    });
-
-    // Step 5: Start the TimerWorkflow.
-    client::WorkflowOptions wo;
-    wo.id = "timer-example-workflow";
-    wo.task_queue = "timer-example-queue";
-
-    auto handle = co_await tc->start_workflow("TimerWorkflow", "{}", wo);
-    std::cout << "Started workflow: " << handle.id()
-              << " (run " << handle.run_id().value_or("") << ")\n";
-
-    // Step 6: Query the status (should be "waiting").
-    auto status = co_await handle.query("status");
-    std::cout << "Workflow status: " << status << "\n";
-
-    // Step 7: Send the approval signal after a short pause.
-    std::cout << "Sending approval signal...\n";
-    co_await handle.signal("approve", "\"manager-override\"");
-    std::cout << "Signal sent.\n";
-
-    // Step 8: Get the final result.
-    auto result = co_await handle.get_result();
-    std::cout << "Workflow result: " << result << "\n";
-
-    // Step 9: Shut down the worker.
-    worker_stop.request_stop();
-    worker_thread.join();
-    std::cout << "Worker shut down.\n";
-}
-
-// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -185,8 +118,72 @@ int main() {
     std::cout << "Temporal C++ SDK v" << temporalio::version() << "\n";
     std::cout << "Timer Workflow example\n\n";
 
+    namespace client = temporalio::client;
+    namespace worker = temporalio::worker;
+
     try {
-        run_task_sync(run());
+        // Step 1: Connect to Temporal.
+        // Each run_task_sync call drives a coroutine to completion, blocking
+        // the main thread. Between calls, the main thread is free.
+        auto tc = run_task_sync(client::TemporalClient::connect(
+            client::TemporalClientConnectOptions{
+                .connection = {.target_host = "localhost:7233"},
+            }));
+        std::cout << "Connected to Temporal server.\n";
+
+        // Step 2: Build the workflow definition.
+        auto timer_workflow = make_timer_definition();
+
+        // Step 3: Configure and create the worker.
+        worker::TemporalWorkerOptions opts;
+        opts.task_queue = "timer-example-queue";
+        opts.workflows.push_back(timer_workflow);
+        opts.max_concurrent_workflow_tasks = 10;
+
+        std::cout << "Starting worker on task queue: " << opts.task_queue << "\n";
+
+        worker::TemporalWorker w(tc, opts);
+
+        // Step 4: Run the worker in a background thread.
+        std::stop_source worker_stop;
+        std::jthread worker_thread([&w, token = worker_stop.get_token()]() {
+            try {
+                run_task_sync(w.execute_async(token));
+            } catch (const std::exception& e) {
+                std::cerr << "Worker error: " << e.what() << "\n";
+            }
+        });
+
+        // Step 5: Start the TimerWorkflow.
+        client::WorkflowOptions wo;
+        wo.id = "timer-example-workflow";
+        wo.task_queue = "timer-example-queue";
+
+        auto handle = run_task_sync(tc->start_workflow("TimerWorkflow", "{}", wo));
+        std::cout << "Started workflow: " << handle.id()
+                  << " (run " << handle.run_id().value_or("") << ")\n";
+
+        // Step 6: Query the status (should be "waiting").
+        auto status = run_task_sync(handle.query("status"));
+        std::cout << "Workflow status: " << status << "\n";
+
+        // Step 7: Send the approval signal after a short pause.
+        std::cout << "Sending approval signal...\n";
+        run_task_sync(handle.signal("approve", "\"manager-override\""));
+        std::cout << "Signal sent.\n";
+
+        // Step 8: Get the final result.
+        auto result = run_task_sync(handle.get_result());
+        std::cout << "Workflow result: " << result << "\n";
+
+        // Step 9: Shut down the worker.
+        // IMPORTANT: request_stop and join are called on the main thread
+        // (not on a Rust callback thread), so they don't starve the tokio
+        // runtime that the bridge uses for poll cancellation callbacks.
+        worker_stop.request_stop();
+        worker_thread.join();
+        std::cout << "Worker shut down.\n";
+
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

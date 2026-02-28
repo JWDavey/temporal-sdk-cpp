@@ -405,11 +405,21 @@ async_::Task<bool> WorkflowInstance::register_condition(
     co_return result;
 }
 
-void WorkflowInstance::handle_start_workflow(const Job& /*job*/) {
+void WorkflowInstance::handle_start_workflow(const Job& job) {
     if (workflow_started_) {
         return;
     }
     workflow_started_ = true;
+
+    // Extract workflow arguments from the job data.
+    // The workflow_worker's convert_jobs() stores args as
+    // std::vector<std::any> (each containing a protobuf Payload).
+    try {
+        workflow_args_ =
+            std::any_cast<std::vector<std::any>>(job.data);
+    } catch (const std::bad_any_cast&) {
+        // No args or unexpected type -- leave empty
+    }
 
     // Create the workflow instance but do NOT start the run coroutine yet.
     // In modern event loop mode, InitializeWorkflow() is called AFTER all
@@ -440,7 +450,8 @@ void WorkflowInstance::initialize_workflow() {
     // to commands (ContinueAsNew, Fail, Cancel).
     // is_handler=false: the main workflow run does not count as a handler.
     auto task =
-        run_top_level(run_func, instance_.get(), {}, /*is_handler=*/false);
+        run_top_level(run_func, instance_.get(),
+                      std::move(workflow_args_), /*is_handler=*/false);
     // Schedule the task's initial suspension point
     scheduler_.schedule(task.handle());
     // Store the task to keep the coroutine alive (prevents UAF when
@@ -821,7 +832,15 @@ async_::Task<std::any> WorkflowInstance::run_top_level(
     // instead of letting them crash the instance.
     try {
         try {
-            co_await func(instance, std::move(args));
+            auto result = co_await func(instance, std::move(args));
+            // Only emit complete for the main workflow run, not for
+            // signal/update handlers
+            if (!is_handler) {
+                Command cmd;
+                cmd.type = CommandType::kCompleteWorkflow;
+                cmd.data = std::move(result);
+                commands_.push_back(std::move(cmd));
+            }
         } catch (const exceptions::ContinueAsNewException& e) {
             // Workflow wants to continue as new
             Command cmd;

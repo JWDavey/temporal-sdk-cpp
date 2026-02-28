@@ -18,6 +18,8 @@
 #include <temporal/sdk/core/workflow_completion/workflow_completion.pb.h>
 
 #include "temporalio/bridge/worker.h"
+#include "temporalio/converters/data_converter.h"
+#include "temporalio/converters/payload_conversion.h"
 #include "temporalio/exceptions/temporal_exception.h"
 
 namespace temporalio::worker::internal {
@@ -51,6 +53,14 @@ void set_duration_millis(google::protobuf::Duration* d,
     d->set_nanos(static_cast<int32_t>(nanos.count()));
 }
 
+/// Extract payload data as a std::any-wrapped string.
+/// For json/plain encoding the data is a JSON value; for other encodings
+/// it's raw bytes represented as a string. This allows downstream handlers
+/// to std::any_cast<std::string> to get the value.
+std::any payload_to_any(const temporal::api::common::v1::Payload& payload) {
+    return std::any(std::string(payload.data().begin(), payload.data().end()));
+}
+
 /// Convert protobuf activity result to WorkflowInstance::ActivityResolution.
 WorkflowInstance::ActivityResolution convert_activity_resolution(
     uint32_t seq,
@@ -59,9 +69,8 @@ WorkflowInstance::ActivityResolution convert_activity_resolution(
     res.seq = seq;
     if (proto_res.has_completed()) {
         res.status = WorkflowInstance::ResolutionStatus::kCompleted;
-        // Store the raw protobuf Payload as std::any for the workflow to decode.
         if (proto_res.completed().has_result()) {
-            res.result = std::any(proto_res.completed().result());
+            res.result = payload_to_any(proto_res.completed().result());
         }
     } else if (proto_res.has_failed()) {
         res.status = WorkflowInstance::ResolutionStatus::kFailed;
@@ -83,7 +92,7 @@ WorkflowInstance::ChildWorkflowResolution convert_child_workflow_resolution(
     if (proto_res.has_completed()) {
         res.status = WorkflowInstance::ResolutionStatus::kCompleted;
         if (proto_res.completed().has_result()) {
-            res.result = std::any(proto_res.completed().result());
+            res.result = payload_to_any(proto_res.completed().result());
         }
     } else if (proto_res.has_failed()) {
         res.status = WorkflowInstance::ResolutionStatus::kFailed;
@@ -106,8 +115,16 @@ std::vector<WorkflowInstance::Job> convert_jobs(
 
         if (proto_job.has_initialize_workflow()) {
             job.type = WorkflowInstance::JobType::kStartWorkflow;
-            // The start data is handled via create_instance; pass the proto.
-            job.data = std::any(proto_job.initialize_workflow());
+            // Extract workflow arguments as std::any-wrapped Payloads for
+            // the workflow run function. Instance creation metadata is
+            // handled separately via create_instance().
+            const auto& init = proto_job.initialize_workflow();
+            std::vector<std::any> args;
+            args.reserve(init.arguments_size());
+            for (const auto& payload : init.arguments()) {
+                args.push_back(payload_to_any(payload));
+            }
+            job.data = std::any(std::move(args));
         } else if (proto_job.has_fire_timer()) {
             job.type = WorkflowInstance::JobType::kFireTimer;
             job.data = std::any(proto_job.fire_timer().seq());
@@ -127,7 +144,7 @@ std::vector<WorkflowInstance::Job> convert_jobs(
             std::vector<std::any> args;
             args.reserve(sig.input_size());
             for (const auto& payload : sig.input()) {
-                args.push_back(std::any(payload));
+                args.push_back(payload_to_any(payload));
             }
             job.data = std::any(std::make_pair(
                 std::string(sig.signal_name()), std::move(args)));
@@ -139,7 +156,7 @@ std::vector<WorkflowInstance::Job> convert_jobs(
             qd.query_name = q.query_type();
             qd.args.reserve(q.arguments_size());
             for (const auto& payload : q.arguments()) {
-                qd.args.push_back(std::any(payload));
+                qd.args.push_back(payload_to_any(payload));
             }
             job.data = std::any(std::move(qd));
         } else if (proto_job.has_cancel_workflow()) {
@@ -155,7 +172,7 @@ std::vector<WorkflowInstance::Job> convert_jobs(
             ud.run_validator = u.run_validator();
             ud.args.reserve(u.input_size());
             for (const auto& payload : u.input()) {
-                ud.args.push_back(std::any(payload));
+                ud.args.push_back(payload_to_any(payload));
             }
             job.data = std::any(std::move(ud));
         } else if (proto_job.has_notify_has_patch()) {
@@ -199,7 +216,8 @@ std::vector<WorkflowInstance::Job> convert_jobs(
 /// Convert WorkflowInstance commands to protobuf WorkflowCommand messages.
 void convert_commands_to_proto(
     const std::vector<WorkflowInstance::Command>& commands,
-    coresdk::workflow_completion::Success* success) {
+    coresdk::workflow_completion::Success* success,
+    const std::shared_ptr<converters::DataConverter>& data_converter) {
     for (const auto& cmd : commands) {
         auto* proto_cmd = success->add_commands();
 
@@ -221,8 +239,21 @@ void convert_commands_to_proto(
                 break;
             }
             case WorkflowInstance::CommandType::kCompleteWorkflow: {
-                proto_cmd->mutable_complete_workflow_execution();
-                // Result payload would be set here if we had encoded data.
+                auto* cwe = proto_cmd->mutable_complete_workflow_execution();
+                // cmd.data holds the workflow return value (std::any)
+                if (cmd.data.has_value() && data_converter &&
+                    data_converter->payload_converter) {
+                    try {
+                        auto payload =
+                            data_converter->payload_converter->to_payload(
+                                cmd.data);
+                        *cwe->mutable_result() =
+                            converters::to_proto_payload(payload);
+                    } catch (...) {
+                        // If serialization fails, leave result empty
+                        // (void workflow)
+                    }
+                }
                 break;
             }
             case WorkflowInstance::CommandType::kFailWorkflow: {
@@ -251,7 +282,18 @@ void convert_commands_to_proto(
                     WorkflowInstance::QueryResponseData>(cmd.data);
                 auto* qr = proto_cmd->mutable_respond_to_query();
                 qr->set_query_id(data.query_id);
-                qr->mutable_succeeded();
+                auto* succeeded = qr->mutable_succeeded();
+                if (data.result.has_value() && data_converter &&
+                    data_converter->payload_converter) {
+                    try {
+                        auto payload =
+                            data_converter->payload_converter->to_payload(
+                                data.result);
+                        *succeeded->mutable_response() =
+                            converters::to_proto_payload(payload);
+                    } catch (...) {
+                    }
+                }
                 break;
             }
             case WorkflowInstance::CommandType::kRespondQueryFailed: {
@@ -283,7 +325,18 @@ void convert_commands_to_proto(
                     WorkflowInstance::UpdateResponseData>(cmd.data);
                 auto* ur = proto_cmd->mutable_update_response();
                 ur->set_protocol_instance_id(data.protocol_instance_id);
-                ur->mutable_completed();
+                auto* completed = ur->mutable_completed();
+                if (data.result.has_value() && data_converter &&
+                    data_converter->payload_converter) {
+                    try {
+                        auto payload =
+                            data_converter->payload_converter->to_payload(
+                                data.result);
+                        *completed =
+                            converters::to_proto_payload(payload);
+                    } catch (...) {
+                    }
+                }
                 break;
             }
             case WorkflowInstance::CommandType::kScheduleActivity: {
@@ -293,15 +346,25 @@ void convert_commands_to_proto(
                 sa->set_seq(data.seq);
                 sa->set_activity_type(data.activity_type);
                 sa->set_task_queue(data.task_queue);
-                if (data.activity_id.has_value()) {
-                    sa->set_activity_id(*data.activity_id);
-                }
-                for ([[maybe_unused]] const auto& arg : data.args) {
-                    // Args are stored as protobuf Payloads (from encoding)
-                    // or as raw values. For now, add empty payloads as
-                    // placeholders; the DataConverter integration will
-                    // populate these properly.
-                    sa->add_arguments();
+                // ActivityId is required by the server. Use the user-provided
+                // ID or auto-generate one from the sequence number.
+                sa->set_activity_id(
+                    data.activity_id.value_or(std::to_string(data.seq)));
+                for (const auto& arg : data.args) {
+                    if (arg.has_value() && data_converter &&
+                        data_converter->payload_converter) {
+                        try {
+                            auto payload =
+                                data_converter->payload_converter->to_payload(
+                                    arg);
+                            *sa->add_arguments() =
+                                converters::to_proto_payload(payload);
+                        } catch (...) {
+                            sa->add_arguments();  // empty placeholder on failure
+                        }
+                    } else {
+                        sa->add_arguments();
+                    }
                 }
                 if (data.schedule_to_close_timeout.has_value()) {
                     set_duration_millis(
@@ -497,10 +560,18 @@ async_::Task<void> WorkflowWorker::handle_activation(
     coresdk::workflow_activation::WorkflowActivation activation;
     if (!activation.ParseFromArray(activation_bytes.data(),
                                    static_cast<int>(activation_bytes.size()))) {
-        // Cannot parse activation -- no run_id available for completion.
-        // This is a fatal protocol error. In C#, this would throw and
-        // the outer catch in HandleActivationAsync builds a failure
-        // completion. Here we just return since we can't build one.
+        // Cannot parse activation -- build a failure completion with empty
+        // run_id. This matches C# behavior where parse failure throws and
+        // the outer catch builds a failure completion.
+        coresdk::workflow_completion::WorkflowActivationCompletion
+            fail_completion;
+        fail_completion.set_run_id("");
+        fail_completion.mutable_failed()->mutable_failure()->set_message(
+            "Failed to parse workflow activation protobuf");
+        std::string fail_bytes;
+        fail_completion.SerializeToString(&fail_bytes);
+        std::vector<uint8_t> fail_vec(fail_bytes.begin(), fail_bytes.end());
+        co_await complete_activation(fail_vec);
         co_return;
     }
 
@@ -588,7 +659,7 @@ async_::Task<void> WorkflowWorker::handle_activation(
         // Convert WorkflowInstance commands to protobuf and build the
         // successful completion.
         auto* success = completion.mutable_successful();
-        convert_commands_to_proto(commands, success);
+        convert_commands_to_proto(commands, success, options_.data_converter);
 
     } catch (const std::exception& e) {
         // Activation handling failure -- send failure completion

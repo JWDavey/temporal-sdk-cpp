@@ -137,6 +137,35 @@ enum class HandlerErrorType {
     kUpstreamTimeout,
 };
 
+/// Exception type for Nexus handler errors with a specific error type.
+class OperationException : public std::runtime_error {
+public:
+    OperationException(HandlerErrorType type, const std::string& msg)
+        : std::runtime_error(msg), type_(type) {}
+
+    /// Get the handler error type.
+    HandlerErrorType error_type() const noexcept { return type_; }
+
+    /// Get the error type as a string for the Nexus protocol.
+    std::string error_type_string() const {
+        switch (type_) {
+            case HandlerErrorType::kBadRequest: return "BAD_REQUEST";
+            case HandlerErrorType::kUnauthenticated: return "UNAUTHENTICATED";
+            case HandlerErrorType::kUnauthorized: return "UNAUTHORIZED";
+            case HandlerErrorType::kNotFound: return "NOT_FOUND";
+            case HandlerErrorType::kResourceExhausted: return "RESOURCE_EXHAUSTED";
+            case HandlerErrorType::kInternal: return "INTERNAL";
+            case HandlerErrorType::kNotImplemented: return "NOT_IMPLEMENTED";
+            case HandlerErrorType::kUnavailable: return "UNAVAILABLE";
+            case HandlerErrorType::kUpstreamTimeout: return "UPSTREAM_TIMEOUT";
+            default: return "INTERNAL";
+        }
+    }
+
+private:
+    HandlerErrorType type_;
+};
+
 // ── NexusOperationExecutionContext ──────────────────────────────────────────
 
 /// Nexus operation context available in Temporal-powered Nexus operations.

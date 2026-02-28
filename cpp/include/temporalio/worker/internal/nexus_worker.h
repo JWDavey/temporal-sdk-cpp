@@ -89,11 +89,11 @@ private:
 
     /// Handle a Nexus start operation task.
     /// @param handler Pre-resolved operation handler (must not be null).
+    /// @param start_ctx Pre-populated start context with headers, links, etc.
     void handle_start_operation(const std::vector<uint8_t>& task_token,
-                                const std::string& service_name,
-                                const std::string& operation_name,
                                 nexus::INexusOperationHandler* handler,
-                                const std::vector<uint8_t>& input);
+                                const std::vector<uint8_t>& input,
+                                nexus::OperationStartContext start_ctx);
 
     /// Handle a Nexus cancel task.
     void handle_cancel_task(const std::vector<uint8_t>& task_token);

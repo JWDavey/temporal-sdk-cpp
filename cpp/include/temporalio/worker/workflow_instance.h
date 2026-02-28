@@ -373,6 +373,9 @@ private:
     // In-progress handler count
     int in_progress_handler_count_{0};
 
+    // Workflow arguments extracted from InitializeWorkflow, passed to run()
+    std::vector<std::any> workflow_args_;
+
     // Update info (only valid during update handling)
     std::optional<workflows::WorkflowUpdateInfo> current_update_info_;
 };
