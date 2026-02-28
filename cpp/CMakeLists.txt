@@ -90,7 +90,8 @@ endif()
 temporalio_build_rust_bridge(
     TARGET temporalio_rust_bridge
     CARGO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../src/Temporalio/Bridge/sdk-core"
-    CRATE_NAME temporal_sdk_core_c_bridge
+    PACKAGE_NAME temporalio-sdk-core-c-bridge
+    CRATE_NAME temporalio_sdk_core_c_bridge
 )
 
 # ── Protobuf code generation ──────────────────────────────────────────────
@@ -126,6 +127,12 @@ file(GLOB_RECURSE TEMPORALIO_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/temporalio/*.h"
 )
 
+# When the real Rust bridge is available (cargo found), exclude the FFI stubs
+# to avoid duplicate symbol definitions.
+if(CARGO_EXECUTABLE)
+    list(FILTER TEMPORALIO_SOURCES EXCLUDE REGEX "ffi_stubs\\.cpp$")
+endif()
+
 # Guard: if no .cpp files exist yet, generate a placeholder so the target is
 # always valid even in a fresh checkout.
 if(NOT TEMPORALIO_SOURCES)
@@ -150,7 +157,6 @@ target_link_libraries(temporalio
     PUBLIC
         ${TEMPORALIO_PROTOBUF_TARGET}
         nlohmann_json::nlohmann_json
-    PRIVATE
         temporalio_rust_bridge
 )
 

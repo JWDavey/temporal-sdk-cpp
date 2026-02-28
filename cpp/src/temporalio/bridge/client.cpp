@@ -10,15 +10,19 @@ namespace temporalio::bridge {
 namespace {
 
 /// Context passed through FFI callbacks for client connect.
+/// Owns the CallScope that keeps interop data alive until the callback fires.
 struct ConnectCallbackContext {
     RuntimeHandle runtime_handle;
     ClientConnectCallback callback;
+    CallScope scope;  // Must outlive the FFI call
 };
 
 /// Context passed through FFI callbacks for RPC calls.
+/// Owns the CallScope that keeps interop data alive until the callback fires.
 struct RpcCallbackContext {
     RuntimeHandle runtime_handle;
     RpcCallCallback callback;
+    CallScope scope;  // Must outlive the FFI call
 };
 
 }  // namespace
@@ -26,19 +30,19 @@ struct RpcCallbackContext {
 void Client::connect_async(Runtime& runtime,
                            const ClientOptions& options,
                            ClientConnectCallback callback) {
-    // We need to heap-allocate the callback context because the FFI call
-    // is asynchronous - the callback fires on a Rust thread.
+    // Heap-allocate the callback context because the FFI call is asynchronous.
+    // The CallScope inside keeps all interop data alive until the callback fires.
     auto ctx = std::make_unique<ConnectCallbackContext>();
     ctx->runtime_handle = runtime.shared_handle();
     ctx->callback = std::move(callback);
 
-    // NOTE: CallScope is destroyed when this function returns, which is before
-    // the async callback fires. This is safe because the Rust FFI function
-    // copies all ByteArrayRef data synchronously before returning.
-    CallScope scope;
+    auto& scope = ctx->scope;
 
     // Build the interop client options
     TemporalCoreClientOptions interop_opts{};
+    // Rust requires non-null pointers for slice::from_raw_parts even with size 0
+    interop_opts.metadata = CallScope::empty_byte_array_ref_array();
+    interop_opts.binary_metadata = CallScope::empty_byte_array_ref_array();
     interop_opts.target_url = scope.byte_array(options.target_url);
     interop_opts.client_name = scope.byte_array(options.client_name);
     interop_opts.client_version = scope.byte_array(options.client_version);
@@ -67,8 +71,8 @@ void Client::connect_async(Runtime& runtime,
     }
 
     // TLS
-    TemporalCoreClientTlsOptions tls_opts{};
     if (options.tls) {
+        TemporalCoreClientTlsOptions tls_opts{};
         tls_opts.server_root_ca_cert =
             scope.byte_array(options.tls->server_root_ca_cert);
         tls_opts.domain = scope.byte_array(options.tls->domain);
@@ -112,12 +116,15 @@ void Client::connect_async(Runtime& runtime,
         interop_opts.http_connect_proxy_options = scope.alloc(proxy_opts);
     }
 
+    // Allocate the options struct on the scope's heap so it lives with the ctx.
+    auto* opts_ptr = scope.alloc(interop_opts);
+
     // The callback context pointer is passed as user_data.
     // The static lambda captures nothing and matches the C callback signature.
     void* user_data = ctx.release();
 
     temporal_core_client_connect(
-        runtime.get(), scope.alloc(interop_opts), user_data,
+        runtime.get(), opts_ptr, user_data,
         [](void* ud, TemporalCoreClient* success,
            const TemporalCoreByteArray* fail) {
             auto ctx_ptr =
@@ -141,13 +148,18 @@ Client::Client(Runtime& runtime, ClientHandle handle)
 
 void Client::rpc_call_async(const RpcCallOptions& options,
                             RpcCallCallback callback) {
+    // Heap-allocate the callback context because the FFI call is asynchronous.
+    // The CallScope inside keeps all interop data alive until the callback fires.
     auto ctx = std::make_unique<RpcCallbackContext>();
     ctx->runtime_handle = runtime_handle_;
     ctx->callback = std::move(callback);
 
-    CallScope scope;
+    auto& scope = ctx->scope;
 
     TemporalCoreRpcCallOptions interop_opts{};
+    // Rust requires non-null pointers for slice::from_raw_parts even with size 0
+    interop_opts.metadata = CallScope::empty_byte_array_ref_array();
+    interop_opts.binary_metadata = CallScope::empty_byte_array_ref_array();
     interop_opts.service = options.service;
     interop_opts.rpc = scope.byte_array(options.rpc);
     interop_opts.req = scope.byte_array(
@@ -175,10 +187,13 @@ void Client::rpc_call_async(const RpcCallOptions& options,
             scope.byte_array_array_kv(binary_as_strings);
     }
 
+    // Allocate the options struct on the scope's heap so it lives with the ctx.
+    auto* opts_ptr = scope.alloc(interop_opts);
+
     void* user_data = ctx.release();
 
     temporal_core_client_rpc_call(
-        handle_.get(), scope.alloc(interop_opts), user_data,
+        handle_.get(), opts_ptr, user_data,
         [](void* ud, const TemporalCoreByteArray* success,
            uint32_t status_code, const TemporalCoreByteArray* failure_message,
            const TemporalCoreByteArray* failure_details) {

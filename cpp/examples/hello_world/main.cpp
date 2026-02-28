@@ -10,6 +10,7 @@
 ///   2. Start a "Greeting" workflow with a string argument.
 ///   3. Wait for the result using the returned workflow handle.
 
+#include <temporalio/async_/run_sync.h>
 #include <temporalio/client/temporal_client.h>
 #include <temporalio/client/temporal_connection.h>
 #include <temporalio/client/workflow_options.h>
@@ -20,25 +21,7 @@
 #include <iostream>
 #include <string>
 
-// Simple synchronous driver for a lazy Task<T>. Resumes the coroutine
-// chain and returns the result. Only works for tasks that complete
-// without suspending on external I/O (e.g., bridge callbacks).
-template <typename T>
-T run_sync(temporalio::async_::Task<T> task) {
-    auto handle = task.handle();
-    if (handle && !handle.done()) {
-        handle.resume();
-    }
-    return task.await_resume();
-}
-
-void run_sync(temporalio::async_::Task<void> task) {
-    auto handle = task.handle();
-    if (handle && !handle.done()) {
-        handle.resume();
-    }
-    task.await_resume();
-}
+using temporalio::async_::run_task_sync;
 
 // The async entry point showing the SDK usage pattern.
 temporalio::async_::Task<void> run() {
@@ -74,7 +57,7 @@ int main() {
     std::cout << "Hello World example\n\n";
 
     try {
-        run_sync(run());
+        run_task_sync(run());
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

@@ -12,6 +12,7 @@
 ///
 /// Requires a running Temporal server at localhost:7233.
 
+#include <temporalio/async_/run_sync.h>
 #include <temporalio/async_/task.h>
 #include <temporalio/client/temporal_client.h>
 #include <temporalio/client/workflow_options.h>
@@ -29,23 +30,7 @@
 #include <thread>
 #include <vector>
 
-// Simple synchronous driver for a lazy Task.
-template <typename T>
-T run_sync(temporalio::async_::Task<T> task) {
-    auto handle = task.handle();
-    if (handle && !handle.done()) {
-        handle.resume();
-    }
-    return task.await_resume();
-}
-
-void run_sync(temporalio::async_::Task<void> task) {
-    auto handle = task.handle();
-    if (handle && !handle.done()) {
-        handle.resume();
-    }
-    task.await_resume();
-}
+using temporalio::async_::run_task_sync;
 
 // -- Workflow definition --
 // A shopping cart workflow that demonstrates update handlers with validators,
@@ -156,7 +141,7 @@ temporalio::async_::Task<void> run() {
     std::stop_source worker_stop;
     std::jthread worker_thread([&w, token = worker_stop.get_token()]() {
         try {
-            run_sync(w.execute_async(token));
+            run_task_sync(w.execute_async(token));
         } catch (const std::exception& e) {
             std::cerr << "Worker error: " << e.what() << "\n";
         }
@@ -206,7 +191,7 @@ int main() {
               << ", signals: " << def->signals().size() << ")\n\n";
 
     try {
-        run_sync(run());
+        run_task_sync(run());
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

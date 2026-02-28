@@ -147,6 +147,31 @@ inline std::vector<uint8_t> duration_msg(std::chrono::milliseconds ms) {
     return buf;
 }
 
+/// Build a Payloads message wrapping a single JSON-encoded payload.
+/// Payloads: field 1 = repeated Payload
+/// Payload: field 1 = map<string,bytes> metadata, field 2 = bytes data
+/// Map entries: field 1 = string key, field 2 = bytes value
+inline std::vector<uint8_t> json_payloads(const std::string& json_data) {
+    // Build metadata map entry: "encoding" -> "json/plain"
+    std::vector<uint8_t> map_entry;
+    encode_string_field(map_entry, 1, "encoding");
+    std::string encoding_value = "json/plain";
+    encode_bytes_field(map_entry, 2,
+                       std::vector<uint8_t>(encoding_value.begin(),
+                                            encoding_value.end()));
+
+    // Build the Payload sub-message
+    std::vector<uint8_t> payload;
+    encode_message_field(payload, 1, map_entry);  // metadata map entry
+    std::vector<uint8_t> data_bytes(json_data.begin(), json_data.end());
+    encode_bytes_field(payload, 2, data_bytes);  // data
+
+    // Build the Payloads wrapper
+    std::vector<uint8_t> payloads;
+    encode_message_field(payloads, 1, payload);  // payloads[0]
+    return payloads;
+}
+
 }  // namespace proto
 
 // ── Impl ────────────────────────────────────────────────────────────────────
@@ -257,10 +282,10 @@ async_::Task<WorkflowHandle> TemporalClient::start_workflow(
     proto::encode_message_field(request, 4,
                                 proto::task_queue(options.task_queue));
 
-    // Input payload (field 5) - args as raw bytes if non-empty
+    // Input payload (field 5) - wrap args as a Payloads message
     if (!args.empty()) {
-        std::vector<uint8_t> args_bytes(args.begin(), args.end());
-        proto::encode_bytes_field(request, 5, args_bytes);
+        proto::encode_message_field(request, 5,
+                                    proto::json_payloads(args));
     }
 
     // Timeouts (fields 6, 7, 8)
@@ -383,9 +408,10 @@ async_::Task<void> TemporalClient::signal_workflow(
         proto::workflow_execution(workflow_id, run_id.value_or("")));
     proto::encode_string_field(request, 3, signal_name);
 
+    // Signal input (field 4) - wrap args as a Payloads message
     if (!args.empty()) {
-        std::vector<uint8_t> args_bytes(args.begin(), args.end());
-        proto::encode_bytes_field(request, 4, args_bytes);
+        proto::encode_message_field(request, 4,
+                                    proto::json_payloads(args));
     }
 
     auto identity =

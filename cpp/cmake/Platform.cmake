@@ -38,10 +38,17 @@ endif()
 #       CRATE_NAME <crate-name>
 #   )
 function(temporalio_build_rust_bridge)
-    cmake_parse_arguments(PARSE_ARGV 0 ARG "" "TARGET;CARGO_DIR;CRATE_NAME" "")
+    cmake_parse_arguments(PARSE_ARGV 0 ARG "" "TARGET;CARGO_DIR;CRATE_NAME;PACKAGE_NAME" "")
 
     if(NOT ARG_TARGET OR NOT ARG_CARGO_DIR OR NOT ARG_CRATE_NAME)
         message(FATAL_ERROR "temporalio_build_rust_bridge requires TARGET, CARGO_DIR, and CRATE_NAME")
+    endif()
+
+    # PACKAGE_NAME is the Cargo package name (with hyphens) for `cargo build -p`.
+    # CRATE_NAME is the lib name (with underscores) for the output file.
+    # If PACKAGE_NAME is not specified, fall back to CRATE_NAME.
+    if(NOT ARG_PACKAGE_NAME)
+        set(ARG_PACKAGE_NAME "${ARG_CRATE_NAME}")
     endif()
 
     # If cargo is not available, create a stub INTERFACE target so downstream
@@ -78,13 +85,22 @@ function(temporalio_build_rust_bridge)
     endif()
 
     set(RUST_OUTPUT_DIR "${ARG_CARGO_DIR}/target/${_rust_profile}")
-    set(RUST_LIB_NAME "${TEMPORALIO_RUST_LIB_PREFIX}${ARG_CRATE_NAME}${TEMPORALIO_RUST_STATIC_SUFFIX}")
+    # The Rust crate is a cdylib. On Windows, cargo produces a .dll and a
+    # .dll.lib import library.  On Unix it produces a .so / .dylib.
+    # We link the import library on Windows; on Unix we link the shared lib.
+    if(WIN32)
+        set(RUST_LIB_NAME "${ARG_CRATE_NAME}.dll.lib")
+    elseif(APPLE)
+        set(RUST_LIB_NAME "${TEMPORALIO_RUST_LIB_PREFIX}${ARG_CRATE_NAME}${TEMPORALIO_RUST_SHARED_SUFFIX}")
+    else()
+        set(RUST_LIB_NAME "${TEMPORALIO_RUST_LIB_PREFIX}${ARG_CRATE_NAME}${TEMPORALIO_RUST_SHARED_SUFFIX}")
+    endif()
     set(RUST_LIB_PATH "${RUST_OUTPUT_DIR}/${RUST_LIB_NAME}")
 
     # Custom command to build the Rust crate
     add_custom_command(
         OUTPUT "${RUST_LIB_PATH}"
-        COMMAND ${CARGO_EXECUTABLE} build ${_cargo_flags} -p ${ARG_CRATE_NAME}
+        COMMAND ${CARGO_EXECUTABLE} build ${_cargo_flags} -p ${ARG_PACKAGE_NAME}
         WORKING_DIRECTORY "${ARG_CARGO_DIR}"
         COMMENT "Building Rust crate: ${ARG_CRATE_NAME} (${_rust_profile})"
         VERBATIM
@@ -94,11 +110,24 @@ function(temporalio_build_rust_bridge)
         DEPENDS "${RUST_LIB_PATH}"
     )
 
-    # Create an IMPORTED static library target
-    add_library(${ARG_TARGET} STATIC IMPORTED GLOBAL)
-    set_target_properties(${ARG_TARGET} PROPERTIES
-        IMPORTED_LOCATION "${RUST_LIB_PATH}"
-    )
+    if(WIN32)
+        # On Windows, cdylib produces a .dll + .dll.lib import library.
+        # Use SHARED IMPORTED with IMPORTED_IMPLIB for the import library.
+        set(RUST_DLL_NAME "${ARG_CRATE_NAME}.dll")
+        set(RUST_DLL_PATH "${RUST_OUTPUT_DIR}/${RUST_DLL_NAME}")
+
+        add_library(${ARG_TARGET} SHARED IMPORTED GLOBAL)
+        set_target_properties(${ARG_TARGET} PROPERTIES
+            IMPORTED_LOCATION "${RUST_DLL_PATH}"
+            IMPORTED_IMPLIB   "${RUST_LIB_PATH}"
+        )
+    else()
+        # On Unix, cdylib produces a .so / .dylib.
+        add_library(${ARG_TARGET} SHARED IMPORTED GLOBAL)
+        set_target_properties(${ARG_TARGET} PROPERTIES
+            IMPORTED_LOCATION "${RUST_LIB_PATH}"
+        )
+    endif()
     add_dependencies(${ARG_TARGET} ${ARG_TARGET}_build)
 
     # For multi-config generators, set per-configuration import locations so
@@ -107,12 +136,25 @@ function(temporalio_build_rust_bridge)
     if(_is_multi_config)
         set(_release_dir "${ARG_CARGO_DIR}/target/release")
         set(_debug_dir   "${ARG_CARGO_DIR}/target/debug")
-        set_target_properties(${ARG_TARGET} PROPERTIES
-            IMPORTED_LOCATION_DEBUG   "${_debug_dir}/${RUST_LIB_NAME}"
-            IMPORTED_LOCATION_RELEASE "${_release_dir}/${RUST_LIB_NAME}"
-            IMPORTED_LOCATION_RELWITHDEBINFO "${_release_dir}/${RUST_LIB_NAME}"
-            IMPORTED_LOCATION_MINSIZEREL     "${_release_dir}/${RUST_LIB_NAME}"
-        )
+        if(WIN32)
+            set_target_properties(${ARG_TARGET} PROPERTIES
+                IMPORTED_LOCATION_DEBUG           "${_debug_dir}/${RUST_DLL_NAME}"
+                IMPORTED_IMPLIB_DEBUG             "${_debug_dir}/${RUST_LIB_NAME}"
+                IMPORTED_LOCATION_RELEASE         "${_release_dir}/${RUST_DLL_NAME}"
+                IMPORTED_IMPLIB_RELEASE           "${_release_dir}/${RUST_LIB_NAME}"
+                IMPORTED_LOCATION_RELWITHDEBINFO  "${_release_dir}/${RUST_DLL_NAME}"
+                IMPORTED_IMPLIB_RELWITHDEBINFO    "${_release_dir}/${RUST_LIB_NAME}"
+                IMPORTED_LOCATION_MINSIZEREL      "${_release_dir}/${RUST_DLL_NAME}"
+                IMPORTED_IMPLIB_MINSIZEREL        "${_release_dir}/${RUST_LIB_NAME}"
+            )
+        else()
+            set_target_properties(${ARG_TARGET} PROPERTIES
+                IMPORTED_LOCATION_DEBUG   "${_debug_dir}/${RUST_LIB_NAME}"
+                IMPORTED_LOCATION_RELEASE "${_release_dir}/${RUST_LIB_NAME}"
+                IMPORTED_LOCATION_RELWITHDEBINFO "${_release_dir}/${RUST_LIB_NAME}"
+                IMPORTED_LOCATION_MINSIZEREL     "${_release_dir}/${RUST_LIB_NAME}"
+            )
+        endif()
     endif()
 
     # Platform-specific link dependencies for the Rust runtime

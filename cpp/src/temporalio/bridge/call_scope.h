@@ -166,14 +166,17 @@ public:
         return raw;
     }
 
-    /// Returns an empty ByteArrayRef (null data, zero size).
+    /// Returns an empty ByteArrayRef with a valid non-null pointer.
+    /// Rust's slice::from_raw_parts requires non-null even for size 0.
     static TemporalCoreByteArrayRef empty_byte_array_ref() noexcept {
-        return TemporalCoreByteArrayRef{nullptr, 0};
+        static const uint8_t empty = 0;
+        return TemporalCoreByteArrayRef{&empty, 0};
     }
 
-    /// Returns an empty ByteArrayRefArray.
+    /// Returns an empty ByteArrayRefArray with a valid non-null pointer.
     static TemporalCoreByteArrayRefArray empty_byte_array_ref_array() noexcept {
-        return TemporalCoreByteArrayRefArray{nullptr, 0};
+        static const TemporalCoreByteArrayRef empty{};
+        return TemporalCoreByteArrayRefArray{&empty, 0};
     }
 
 private:

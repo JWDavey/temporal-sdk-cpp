@@ -10,6 +10,7 @@
 /// at localhost:7233 (e.g., via `temporal server start-dev`).
 
 #include <temporalio/activities/activity.h>
+#include <temporalio/async_/run_sync.h>
 #include <temporalio/async_/task.h>
 #include <temporalio/client/temporal_client.h>
 #include <temporalio/client/workflow_options.h>
@@ -28,23 +29,7 @@
 #include <string>
 #include <thread>
 
-// Simple synchronous driver for a lazy Task.
-template <typename T>
-T run_sync(temporalio::async_::Task<T> task) {
-    auto handle = task.handle();
-    if (handle && !handle.done()) {
-        handle.resume();
-    }
-    return task.await_resume();
-}
-
-void run_sync(temporalio::async_::Task<void> task) {
-    auto handle = task.handle();
-    if (handle && !handle.done()) {
-        handle.resume();
-    }
-    task.await_resume();
-}
+using temporalio::async_::run_task_sync;
 
 // -- Activity definition --
 
@@ -120,7 +105,7 @@ temporalio::async_::Task<void> run(std::stop_token shutdown_token) {
     std::jthread worker_thread([&w, token = worker_stop.get_token()]() {
         std::cout << "Worker started on task queue: workflow-activity-queue\n";
         try {
-            run_sync(w.execute_async(token));
+            run_task_sync(w.execute_async(token));
         } catch (const std::exception& e) {
             std::cerr << "Worker error: " << e.what() << "\n";
         }
@@ -156,7 +141,7 @@ int main() {
     std::stop_source stop;
 
     try {
-        run_sync(run(stop.get_token()));
+        run_task_sync(run(stop.get_token()));
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

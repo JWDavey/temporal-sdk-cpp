@@ -41,7 +41,14 @@ namespace {
 bridge::ClientOptions to_bridge_options(
     const TemporalConnectionOptions& opts) {
     bridge::ClientOptions bridge_opts;
-    bridge_opts.target_url = opts.target_host;
+
+    // Auto-prepend scheme if missing, matching C# SDK behavior.
+    auto host = opts.target_host;
+    if (host.substr(0, 7) != "http://" && host.substr(0, 8) != "https://") {
+        bool use_tls = opts.tls && !opts.tls->disabled;
+        host = (use_tls ? "https://" : "http://") + host;
+    }
+    bridge_opts.target_url = std::move(host);
     bridge_opts.client_name = "temporal-cpp";
     bridge_opts.client_version = "0.1.0";
     bridge_opts.identity = opts.identity.value_or("cpp-sdk");

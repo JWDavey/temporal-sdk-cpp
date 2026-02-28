@@ -10,6 +10,7 @@
 /// Requires a running Temporal server at localhost:7233.
 
 #include <temporalio/activities/activity.h>
+#include <temporalio/async_/run_sync.h>
 #include <temporalio/async_/task.h>
 #include <temporalio/client/temporal_client.h>
 #include <temporalio/version.h>
@@ -22,23 +23,7 @@
 #include <stop_token>
 #include <string>
 
-// Simple synchronous driver for a lazy Task.
-template <typename T>
-T run_sync(temporalio::async_::Task<T> task) {
-    auto handle = task.handle();
-    if (handle && !handle.done()) {
-        handle.resume();
-    }
-    return task.await_resume();
-}
-
-void run_sync(temporalio::async_::Task<void> task) {
-    auto handle = task.handle();
-    if (handle && !handle.done()) {
-        handle.resume();
-    }
-    task.await_resume();
-}
+using temporalio::async_::run_task_sync;
 
 // -- Activity definitions --
 
@@ -116,7 +101,7 @@ int main() {
     std::stop_source stop;
 
     try {
-        run_sync(run(stop.get_token()));
+        run_task_sync(run(stop.get_token()));
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

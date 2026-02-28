@@ -77,6 +77,10 @@ TemporalWorker::TemporalWorker(std::shared_ptr<client::TemporalClient> client,
     auto* bridge_client = client_->bridge_client();
     if (bridge_client) {
         TemporalCoreWorkerOptions core_opts{};
+        // Rust requires non-null pointers for slice::from_raw_parts even with size 0
+        core_opts.nondeterminism_as_workflow_fail_for_types =
+            bridge::CallScope::empty_byte_array_ref_array();
+        core_opts.plugins = bridge::CallScope::empty_byte_array_ref_array();
         auto ns_str = options_.ns.empty() ? client_->ns() : options_.ns;
 
         // Build CallScope-compatible byte arrays inline.
