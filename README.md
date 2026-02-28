@@ -9,8 +9,10 @@ execute asynchronous, long-running business logic in a scalable and resilient wa
 operations. It wraps the shared Rust `sdk-core` engine via a C FFI bridge, providing fully asynchronous coroutine-based
 APIs.
 
-> **Status: Pre-release** -- The SDK builds and all 646 unit tests pass on MSVC 2022 (Windows). Integration testing
-> against a live Temporal server is in progress. The API is not yet stable.
+> **Status: Functionally Complete** -- The SDK builds on MSVC 2022 (Windows) with 676/682 unit tests passing.
+> All 3 self-contained examples run end-to-end against a live Temporal server with clean shutdown (exit code 0).
+> Workflows execute activities, handle signals/queries/updates, use timers, and return results correctly.
+> The API is not yet stable.
 
 ## Features
 
@@ -76,36 +78,55 @@ cmake -B cpp/build -S cpp \
 
 using namespace temporalio;
 
-// Define a workflow
+// Activity: takes a name, returns a greeting
+temporalio::async_::Task<std::string> greet(std::string name) {
+    co_return "Hello, " + name + "!";
+}
+
+// Workflow: calls the greet activity and returns its result
 class GreetingWorkflow {
 public:
-    async_::Task<std::string> run(std::string name) {
-        co_return "Hello, " + name + "!";
+    async_::Task<std::any> run(std::vector<std::any> args) {
+        auto name = std::any_cast<std::string>(args[0]);
+        workflows::ActivityOptions opts;
+        opts.start_to_close_timeout = std::chrono::seconds(30);
+        co_return co_await workflows::Workflow::execute_activity(
+            "greet", std::any(name), opts);
     }
 };
 
-// Register and start a worker
-async_::Task<void> run_worker() {
+int main() {
     // Connect to Temporal
-    client::TemporalConnectionOptions conn_opts;
-    conn_opts.target_host = "localhost:7233";
-    auto connection = co_await client::TemporalConnection::connect(conn_opts);
+    auto tc = async_::run_task_sync(client::TemporalClient::connect(
+        {.connection = {.target_host = "localhost:7233"}}));
 
-    auto client = std::make_shared<client::TemporalClient>(connection);
+    // Register activity and workflow
+    auto activity = activities::ActivityDefinition::create("greet", &greet);
+    auto workflow = workflows::WorkflowDefinition::create<GreetingWorkflow>(
+        "GreetingWorkflow").run(&GreetingWorkflow::run).build();
 
-    // Register the workflow
-    auto workflow_def = workflows::WorkflowDefinition::builder<GreetingWorkflow>("GreetingWorkflow")
-        .run(&GreetingWorkflow::run)
-        .build();
+    // Start worker on a background thread
+    worker::TemporalWorkerOptions opts;
+    opts.task_queue = "greeting-queue";
+    opts.activities.push_back(activity);
+    opts.workflows.push_back(workflow);
+    worker::TemporalWorker w(tc, opts);
 
-    // Start the worker
-    worker::TemporalWorkerOptions worker_opts;
-    worker_opts.task_queue = "greeting-queue";
-    worker_opts.workflows.push_back(workflow_def);
-
-    worker::TemporalWorker worker(client, worker_opts);
     std::stop_source stop;
-    co_await worker.execute_async(stop.get_token());
+    std::jthread worker_thread([&w, token = stop.get_token()]() {
+        async_::run_task_sync(w.execute_async(token));
+    });
+
+    // Start workflow and get result
+    auto handle = async_::run_task_sync(tc->start_workflow(
+        "GreetingWorkflow", "\"World\"",
+        {.id = "my-workflow", .task_queue = "greeting-queue"}));
+    auto result = async_::run_task_sync(handle.get_result());
+    std::cout << "Result: " << result << "\n";
+
+    // Clean shutdown on main thread
+    stop.request_stop();
+    worker_thread.join();
 }
 ```
 
@@ -142,7 +163,7 @@ cpp/
     opentelemetry/                 # TracingInterceptor
     diagnostics/                   # CustomMetricMeter
 
-  tests/                           # Google Test suite (37 files, 646 tests)
+  tests/                           # Google Test suite (37 files, 682 tests)
   examples/                        # 6 examples (see Examples section below)
 ```
 
@@ -152,19 +173,19 @@ Six examples in `cpp/examples/` demonstrate key Temporal patterns. All require a
 
 | Example | What it demonstrates |
 |---------|---------------------|
-| `hello_world` | Connect to Temporal, start a workflow, get the result |
-| `signal_workflow` | Send signals to a running workflow, query workflow state |
-| `activity_worker` | Define activities and register them with a worker |
-| `workflow_activity` | **Full lifecycle**: workflow calls `execute_activity()`, worker runs both |
-| `timer_workflow` | Deterministic timers (`delay()`), conditions (`wait_condition()`), `utc_now()` |
-| `update_workflow` | Update handlers with validators, queries, signals, graceful handler draining |
+| `hello_world` | Client-only: connect and start a workflow |
+| `signal_workflow` | Client-only: send signals and query workflow state |
+| `activity_worker` | Worker-only: define and register activities |
+| `workflow_activity` | **E2E**: workflow calls `execute_activity()`, returns result, clean shutdown |
+| `timer_workflow` | **E2E**: deterministic timers, conditions, signals, queries |
+| `update_workflow` | **E2E**: update handlers with validators, queries, signals |
 
 ```bash
 # Build all examples
-cmake --build cpp/build
+cmake --build cpp/build --config Debug
 
 # Run an example (requires: temporal server start-dev)
-./cpp/build/example_workflow_activity
+./cpp/build/examples/Debug/example_workflow_activity
 ```
 
 ## Architecture
@@ -228,7 +249,7 @@ ctest --test-dir cpp/build --output-on-failure
 ctest --test-dir cpp/build --output-on-failure --verbose
 ```
 
-646 unit tests cover:
+682 unit tests (676 passing) cover:
 - Async primitives (Task, CancellationToken, CoroutineScheduler, TaskCompletionSource)
 - Bridge layer (CallScope, SafeHandle)
 - Client (connection options, interceptors, workflow handle)
