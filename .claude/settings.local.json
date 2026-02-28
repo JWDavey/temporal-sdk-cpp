@@ -29,7 +29,16 @@
       "Bash(cmd.exe:*)",
       "Bash(\"$CMAKE_EXE\":*)",
       "Bash('/c/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe':*)",
-      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe\":*)"
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe\":*)",
+      "Bash(CMAKE=\"/c/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" && ls -la /c/git/temporal-sdk-cpp/cpp/build/CMakeCache.txt 2>/dev/null && echo \"Build dir exists\" || echo \"No existing build dir\")",
+      "Bash(\"$CTEST\":*)",
+      "Bash(wc:*)",
+      "Bash(\"C:/git/temporal-sdk-cpp/cpp/examples/workflow_activity/main.cpp\":*)",
+      "Bash(powershell.exe:*)",
+      "Bash(\"$CMAKE\" ..:*)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/\"*/bin/Hostx64/x64/cl.exe:*)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe\":*)",
+      "Bash(ctest:*)"
     ]
   }
 }
