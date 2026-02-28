@@ -38,7 +38,19 @@
       "Bash(\"$CMAKE\" ..:*)",
       "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/\"*/bin/Hostx64/x64/cl.exe:*)",
       "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe\":*)",
-      "Bash(ctest:*)"
+      "Bash(ctest:*)",
+      "Bash(docker ps:*)",
+      "Bash(curl:*)",
+      "Bash(docker exec:*)",
+      "Bash(timeout 30 ./example_workflow_activity.exe:*)",
+      "Bash(cargo:*)",
+      "Bash(where:*)",
+      "Bash(timeout 15 ./example_hello_world.exe:*)",
+      "Bash(timeout 10 ./example_hello_world.exe:*)",
+      "Bash(timeout 15 ./example_timer_workflow.exe:*)",
+      "Bash(timeout 10 ./example_signal_workflow.exe:*)",
+      "Bash(timeout 15 ./example_update_workflow.exe:*)",
+      "Bash(timeout 5 ./example_activity_worker.exe:*)"
     ]
   }
 }
