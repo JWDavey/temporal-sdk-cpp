@@ -426,18 +426,376 @@ to match the actual implementation behavior.
 **Files to modify:**
 - `cpp/tests/bridge/call_scope_tests.cpp` — Update assertions to match `empty_byte_array_ref()` / `empty_byte_array_ref_array()` behavior
 
-### 8. CI/CD Pipeline (LOWER PRIORITY)
+### 8. Ninja Build System Support — **PENDING**
+
+**Problem:** The current build uses the default CMake generator (Visual Studio on Windows, Unix
+Makefiles on Linux). On Windows, MSVC's MSBuild generator is slow for incremental rebuilds — it
+re-evaluates all 74 protobuf targets and 50+ abseil targets on every invocation even when nothing
+changed. Full builds take several minutes. Ninja is significantly faster for both full and
+incremental builds because it uses a single-pass dependency graph and minimal stat() calls.
+
+**Benefits of Ninja:**
+- 2-5x faster incremental builds (only rebuilds changed files)
+- Parallel compilation by default (no `/m` flag needed)
+- Works with MSVC (`cl.exe`), GCC, and Clang on all platforms
+- Better progress output (single progress bar vs. per-project output)
+- Multi-config support via `Ninja Multi-Config` generator
+
+**Ninja availability:**
+- **Local development:** Ninja v1.13.2 is installed at `C:\ninja\ninja.exe`. Add `C:\ninja` to
+  PATH or pass `-DCMAKE_MAKE_PROGRAM=C:/ninja/ninja.exe` to cmake.
+- **vcpkg port builds:** vcpkg [automatically uses Ninja as its default CMake generator](https://learn.microsoft.com/en-us/vcpkg/maintainers/functions/vcpkg_cmake_configure)
+  for all platforms. No manual Ninja installation is needed — vcpkg downloads and manages it
+  internally via `vcpkg_find_acquire_program(NINJA)`. This means vcpkg port builds (section 9)
+  will always use Ninja automatically.
+- **CI environments:** GitHub Actions runners have Ninja pre-installed. On Linux CI, install via
+  `apt-get install ninja-build`. On Windows CI, it comes with Visual Studio 2022 or can be
+  installed via `choco install ninja`.
+
+**Implementation:**
+
+#### 8.1 Add CMake Presets with Ninja as Default Generator
+
+CMake presets provide a declarative way to configure the generator, compiler, and build type
+without requiring users to remember long command lines. The presets should default to Ninja
+and reference the local install path as a fallback.
+
+**Files to create/modify:**
+- `cpp/CMakePresets.json` — Add presets for common configurations:
+  ```json
+  {
+    "version": 6,
+    "configurePresets": [
+      {
+        "name": "windows-debug",
+        "displayName": "Windows Debug (Ninja)",
+        "generator": "Ninja Multi-Config",
+        "binaryDir": "${sourceDir}/build",
+        "cacheVariables": {
+          "CMAKE_CXX_COMPILER": "cl.exe",
+          "CMAKE_MAKE_PROGRAM": "C:/ninja/ninja.exe"
+        },
+        "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+      },
+      {
+        "name": "windows-release",
+        "displayName": "Windows Release (Ninja)",
+        "inherits": "windows-debug"
+      },
+      {
+        "name": "linux-debug",
+        "displayName": "Linux Debug (Ninja)",
+        "generator": "Ninja Multi-Config",
+        "binaryDir": "${sourceDir}/build",
+        "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+      },
+      {
+        "name": "linux-release",
+        "displayName": "Linux Release (Ninja)",
+        "inherits": "linux-debug"
+      }
+    ],
+    "buildPresets": [
+      { "name": "debug", "configurePreset": "windows-debug", "configuration": "Debug" },
+      { "name": "release", "configurePreset": "windows-release", "configuration": "Release" }
+    ]
+  }
+  ```
+- `cpp/CMakeUserPresets.json` — Document as `.gitignore`'d file for user-local overrides
+  (e.g., different Ninja path, different compiler). Users can override `CMAKE_MAKE_PROGRAM`
+  here without modifying the checked-in presets.
+
+- `README.md` — Update build instructions to show Ninja usage:
+  ```bash
+  # Fast build with Ninja (recommended)
+  cmake --preset windows-debug        # Uses C:\ninja\ninja.exe automatically
+  cmake --build --preset debug
+
+  # Or manually specify Ninja
+  cmake -B cpp/build -S cpp -G "Ninja Multi-Config" -DCMAKE_MAKE_PROGRAM=C:/ninja/ninja.exe
+  cmake --build cpp/build --config Debug
+
+  # If Ninja is on PATH, no -DCMAKE_MAKE_PROGRAM needed
+  cmake -B cpp/build -S cpp -G "Ninja Multi-Config"
+  cmake --build cpp/build --config Debug
+  ```
+
+#### 8.2 Fix MSVC-Specific Flags for Ninja
+
+When using Ninja with MSVC, some flags behave differently than under MSBuild:
+- `/FS` (force synchronous PDB) is already set in `CMakeLists.txt` — verify it's not needed with
+  Ninja (Ninja doesn't have MSBuild's parallel-project PDB contention)
+- `/MP` (multi-processor compilation) is MSBuild-specific — should NOT be added with Ninja
+  (Ninja handles parallelism itself)
+- Debug info format: `/Zi` (shared PDB) can cause lock contention with Ninja's parallel
+  compilation; `/Z7` (embedded debug info) avoids this entirely
+
+**Files to modify:**
+- `cpp/CMakeLists.txt` — Add generator-conditional flags:
+  ```cmake
+  if(MSVC)
+      if(CMAKE_GENERATOR MATCHES "Ninja")
+          # Ninja handles parallelism; /Z7 avoids PDB contention
+          add_compile_options(/Z7)
+      else()
+          # MSBuild needs /FS for parallel PDB writes
+          add_compile_options(/FS)
+      endif()
+  endif()
+  ```
+- `cpp/cmake/CompilerWarnings.cmake` — Verify warning flags are Ninja-compatible
+
+#### 8.3 CI Integration
+
+Update CI workflows to use Ninja for faster builds.
+
+**Files to modify:**
+- `.github/workflows/cpp-ci.yml` — Set `-G Ninja` in cmake configure steps. Ninja is
+  pre-installed on GitHub Actions runners; add `ninja-build` to apt install for Linux
+  if needed.
+
+**Build command examples:**
+```bash
+# Windows CI (Ninja pre-installed with VS 2022, or use C:\ninja\ninja.exe)
+cmake -B cpp/build -S cpp -G "Ninja Multi-Config"
+cmake --build cpp/build --config Debug -j
+
+# Linux CI
+cmake -B cpp/build -S cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build cpp/build -j
+```
+
+### 9. vcpkg Package Support — **PENDING**
+
+**Problem:** The SDK cannot currently be consumed as a vcpkg package. Users must clone the repo,
+build from source, and manually set up include/library paths. For the SDK to be useful in
+production C++ projects, it needs to be installable via vcpkg as either a static library or
+a shared library (DLL), with proper CMake `find_package()` integration.
+
+**Current state:**
+- `cpp/vcpkg.json` exists but only declares *dependencies* (protobuf, nlohmann-json, gtest,
+  opentelemetry-cpp) — it does not make the SDK itself a vcpkg port
+- `cpp/CMakeLists.txt` has `BUILD_SHARED_LIBS` option but no install targets or CMake config
+  file generation
+- The Rust bridge (`temporalio_sdk_core_c_bridge.dll`/`.so`) is built via cargo and linked as
+  an IMPORTED target — vcpkg packaging must handle this native dependency
+
+**Note:** vcpkg [automatically uses Ninja](https://learn.microsoft.com/en-us/vcpkg/maintainers/functions/vcpkg_cmake_configure)
+as its default CMake generator when building ports. All `vcpkg install temporalio` builds will
+use Ninja without any extra configuration. The `BUILD_SHARED_LIBS` variable is automatically set
+by vcpkg based on the triplet's `VCPKG_LIBRARY_LINKAGE` setting (`static` or `dynamic`).
+
+**Implementation:**
+
+#### 9.1 Add CMake Install Targets
+
+The library must be installable via `cmake --install` before it can be packaged.
+
+**Files to modify:**
+- `cpp/CMakeLists.txt` — Add install rules:
+  ```cmake
+  include(GNUInstallDirs)
+  include(CMakePackageConfigHelpers)
+
+  # Install the temporalio library
+  install(TARGETS temporalio temporalio_proto
+      EXPORT temporalioTargets
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}  # DLLs on Windows
+  )
+
+  # Install public headers
+  install(DIRECTORY include/temporalio
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+      FILES_MATCHING PATTERN "*.h"
+  )
+
+  # Install the Rust bridge DLL/SO alongside the library
+  if(TARGET temporalio_rust_bridge)
+      install(IMPORTED_RUNTIME_ARTIFACTS temporalio_rust_bridge
+          RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+          LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      )
+  endif()
+
+  # Generate and install CMake config files for find_package()
+  install(EXPORT temporalioTargets
+      FILE temporalioTargets.cmake
+      NAMESPACE temporalio::
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/temporalio
+  )
+
+  configure_package_config_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/temporalioConfig.cmake.in"
+      "${CMAKE_CURRENT_BINARY_DIR}/temporalioConfig.cmake"
+      INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/temporalio
+  )
+
+  write_basic_package_version_file(
+      "${CMAKE_CURRENT_BINARY_DIR}/temporalioConfigVersion.cmake"
+      VERSION ${PROJECT_VERSION}
+      COMPATIBILITY SameMajorVersion
+  )
+
+  install(FILES
+      "${CMAKE_CURRENT_BINARY_DIR}/temporalioConfig.cmake"
+      "${CMAKE_CURRENT_BINARY_DIR}/temporalioConfigVersion.cmake"
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/temporalio
+  )
+  ```
+
+- `cpp/cmake/temporalioConfig.cmake.in` — Create config template:
+  ```cmake
+  @PACKAGE_INIT@
+  include(CMakeFindDependencyMacro)
+  find_dependency(Protobuf)
+  find_dependency(nlohmann_json)
+  include("${CMAKE_CURRENT_LIST_DIR}/temporalioTargets.cmake")
+  check_required_components(temporalio)
+  ```
+
+#### 9.2 Create vcpkg Port Files
+
+Create the files needed for vcpkg to build and install the SDK.
+
+**Files to create:**
+- `vcpkg-port/portfile.cmake` — vcpkg build script:
+  ```cmake
+  vcpkg_from_github(
+      OUT_SOURCE_PATH SOURCE_PATH
+      REPO temporalio/sdk-cpp
+      REF "v${VERSION}"
+      SHA512 <hash>
+  )
+
+  # Build the Rust bridge first
+  vcpkg_find_acquire_program(CARGO)
+  # ... cargo build steps ...
+
+  vcpkg_cmake_configure(
+      SOURCE_PATH "${SOURCE_PATH}/cpp"
+      OPTIONS
+          -DTEMPORALIO_BUILD_TESTS=OFF
+          -DTEMPORALIO_BUILD_EXAMPLES=OFF
+          -DTEMPORALIO_BUILD_EXTENSIONS=OFF
+  )
+
+  vcpkg_cmake_install()
+  vcpkg_cmake_config_fixup(PACKAGE_NAME temporalio CONFIG_PATH lib/cmake/temporalio)
+  vcpkg_copy_pdbs()
+
+  file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
+  vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/LICENSE")
+  ```
+
+- `vcpkg-port/vcpkg.json` — Port manifest (distinct from the project's `vcpkg.json`):
+  ```json
+  {
+    "name": "temporalio",
+    "version": "0.1.0",
+    "description": "Temporal C++ SDK - durable execution framework",
+    "homepage": "https://temporal.io",
+    "license": "MIT",
+    "supports": "!uwp & !(arm & windows)",
+    "dependencies": [
+      "protobuf",
+      "nlohmann-json",
+      { "name": "vcpkg-cmake", "host": true },
+      { "name": "vcpkg-cmake-config", "host": true }
+    ],
+    "features": {
+      "opentelemetry": {
+        "description": "OpenTelemetry tracing extension",
+        "dependencies": ["opentelemetry-cpp"]
+      },
+      "diagnostics": {
+        "description": "Diagnostics metrics extension",
+        "dependencies": ["opentelemetry-cpp"]
+      }
+    }
+  }
+  ```
+
+#### 9.3 Support Both Static and Shared Library Builds
+
+vcpkg builds both static and dynamic triplets. The SDK must work correctly in both modes.
+
+**Key considerations:**
+- **Static library** (`temporalio.lib` / `libtemporalio.a`): The Rust bridge DLL/SO must still
+  be distributed alongside (it's always a shared library from cargo `cdylib`). Consumers link
+  `temporalio.lib` statically and load `temporalio_sdk_core_c_bridge.dll` at runtime.
+- **Shared library** (`temporalio.dll` / `libtemporalio.so`): Both the C++ SDK and Rust bridge
+  are shared libraries. Symbol visibility must be managed with `__declspec(dllexport)` /
+  `__attribute__((visibility("default")))`.
+
+**Files to modify:**
+- `cpp/CMakeLists.txt` — Add export macros:
+  ```cmake
+  include(GenerateExportHeader)
+  generate_export_header(temporalio
+      EXPORT_FILE_NAME "${CMAKE_CURRENT_BINARY_DIR}/temporalio/export.h"
+  )
+  ```
+- `cpp/include/temporalio/export.h` — Auto-generated header with `TEMPORALIO_EXPORT` macro
+- All public API classes/functions — Add `TEMPORALIO_EXPORT` to declarations that need to be
+  visible from the DLL. Key classes:
+  - `TemporalClient`, `TemporalConnection`, `WorkflowHandle`
+  - `TemporalWorker`, `WorkflowDefinition`, `ActivityDefinition`
+  - `DataConverter`, `TemporalRuntime`
+  - All exception classes
+- `cpp/cmake/Platform.cmake` — Ensure the Rust bridge DLL is installed alongside the SDK DLL
+
+#### 9.4 vcpkg Overlay Port for Local Development
+
+Allow developers to test the vcpkg port locally before submitting to the vcpkg registry.
+
+**Files to create:**
+- `vcpkg-overlay/temporalio/portfile.cmake` — Same as 9.2 but using `SOURCE_PATH` from local checkout
+- `vcpkg-overlay/temporalio/vcpkg.json` — Same as 9.2
+
+**Usage:**
+```bash
+# Install from local overlay
+vcpkg install temporalio --overlay-ports=./vcpkg-overlay
+
+# Use in a consumer project
+find_package(temporalio CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE temporalio::temporalio)
+```
+
+#### 9.5 Consumer Integration Test
+
+Create a minimal test project that consumes the SDK via `find_package()` to verify the install
+and vcpkg packaging work correctly.
+
+**Files to create:**
+- `test-consumer/CMakeLists.txt`:
+  ```cmake
+  cmake_minimum_required(VERSION 3.20)
+  project(temporalio_consumer_test CXX)
+  set(CMAKE_CXX_STANDARD 20)
+  find_package(temporalio CONFIG REQUIRED)
+  add_executable(consumer_test main.cpp)
+  target_link_libraries(consumer_test PRIVATE temporalio::temporalio)
+  ```
+- `test-consumer/main.cpp` — Minimal program that includes headers, creates a runtime,
+  verifies version string, and exits
+
+### 10. CI/CD Pipeline — **PENDING (LOWER PRIORITY)**
 
 - [ ] GitHub Actions workflow for Windows (MSVC) + Linux (GCC + Clang)
+- [ ] Ninja-based CI builds (see section 8.3)
 - [ ] AddressSanitizer and UndefinedBehaviorSanitizer CI runs
 - [ ] Code coverage reporting
 - [ ] Example programs verified in CI
+- [ ] vcpkg install verification in CI (see section 9.5)
 
-### 9. Documentation & Packaging (LOWER PRIORITY)
+### 11. Documentation & Packaging — **PENDING (LOWER PRIORITY)**
 
 - [ ] Doxygen generation from `@file` / `///` doc comments
-- [ ] Install targets (`cmake --install`) produce correct header + lib layout
-- [ ] `find_package(temporalio)` support via CMake config files
+- [ ] Install targets (`cmake --install`) produce correct header + lib layout (see section 9.1)
+- [ ] `find_package(temporalio)` support via CMake config files (see section 9.1)
 - [x] README.md with build instructions and getting started guide
 
 ---
