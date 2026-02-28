@@ -239,19 +239,206 @@ Bugs found and fixed during integration (see bugs #29-#36):
 - [x] Worker shutdown hang fixed — detached threads + co_await TCS, main-thread join in examples
 - [x] All 3 E2E examples verified against live Temporal server (exit code 0)
 
-### 7. CI/CD Pipeline (LOWER PRIORITY)
+### 7. API Stabilization — **PENDING (must complete before 1.0)**
+
+The public API has several areas that are incomplete or ergonomically poor compared to other
+Temporal SDKs (.NET, Go, TypeScript, Python). These must be resolved before the API can be
+declared stable.
+
+#### 7.1 Replace Raw JSON String Arguments with DataConverter Integration (HIGH)
+
+**Problem:** `TemporalClient::start_workflow()`, `WorkflowHandle::signal()`, `query()`, and
+all client-facing methods take raw JSON strings for arguments (`"\"Temporal\""`) and return
+raw JSON strings for results. Users must manually JSON-encode inputs and JSON-decode outputs.
+This causes double-encoding bugs (e.g., excessive escaping in workflow results) and is
+fundamentally different from every other Temporal SDK where serialization is transparent.
+
+**Current API (will change):**
+```cpp
+// User must manually JSON-encode the argument
+auto handle = run_task_sync(tc->start_workflow("MyWorkflow", "\"Temporal\"", opts));
+// Result comes back as raw JSON string
+auto result = run_task_sync(handle.get_result());  // returns std::string of JSON
+```
+
+**Target API:**
+```cpp
+// DataConverter handles serialization transparently
+auto handle = run_task_sync(tc->start_workflow("MyWorkflow", std::string("Temporal"), opts));
+auto result = run_task_sync(handle.get_result<std::string>());
+```
+
+**Files to modify:**
+- `cpp/include/temporalio/client/temporal_client.h` — Change `start_workflow()` args from `const std::string&` to templated or `std::any` with DataConverter
+- `cpp/include/temporalio/client/workflow_handle.h` — Change `get_result()` to `get_result<T>()`, `signal()` and `query()` to accept typed args
+- `cpp/src/temporalio/client/temporal_client.cpp` — Wire DataConverter for argument serialization
+- `cpp/src/temporalio/client/workflow_handle.cpp` — Wire DataConverter for result deserialization
+- All 6 example `main.cpp` files — Update call sites
+
+**Reference:** `workflow_handle.h:71` has:
+> `// TODO: Replace raw std::string args/results with Payload types once the DataConverter integration is wired up.`
+
+#### 7.2 Replace `std::any` / `std::vector<std::any>` in Workflow/Activity Signatures (HIGH)
+
+**Problem:** Workflow run functions take `std::vector<std::any>` and return `std::any`.
+Activity executors use the same pattern internally. Users must manually `std::any_cast<>` every
+argument and wrap every return value. This is error-prone (runtime `bad_any_cast` instead of
+compile-time errors) and adds boilerplate to every workflow and activity.
+
+**Current API (will change):**
+```cpp
+class GreetingWorkflow {
+public:
+    async_::Task<std::any> run(std::vector<std::any> args) {
+        std::string name = std::any_cast<std::string>(args[0]);  // Manual unwrap
+        // ...
+        co_return std::any(result);  // Manual wrap
+    }
+};
+```
+
+**Target API:**
+```cpp
+class GreetingWorkflow {
+public:
+    async_::Task<std::string> run(std::string name) {
+        // Type-safe, no manual casting
+        co_return "Hello, " + name + "!";
+    }
+};
+```
+
+**Files to modify:**
+- `cpp/include/temporalio/workflows/workflow_definition.h` — Builder should deduce argument/return types from the member function pointer and generate type-safe wrappers
+- `cpp/include/temporalio/workflows/workflow.h` — `execute_activity()` should accept typed args
+- `cpp/include/temporalio/activities/activity.h` — Activity executor should use typed signatures
+- Signal, query, and update handler registrations (lines 32, 45, 55 of `workflow_definition.h`) — All use `std::vector<std::any>`
+- `cpp/include/temporalio/converters/data_converter.h` — `IPayloadConverter` interface uses `std::any`; may need templated alternatives
+
+**Note:** The builder already uses template deduction on member function pointers (`.run(&Workflow::run)`)
+but discards the type information and erases to `std::any`. The fix is to preserve that type info
+and generate serialization/deserialization wrappers at registration time.
+
+#### 7.3 Add `WorkflowHandle::update()` Method (MEDIUM)
+
+**Problem:** The `WorkflowHandle` is missing the `update()` method. The update_workflow example
+explicitly notes this:
+> `// NOTE: When WorkflowHandle::update() is available, you would use:`
+> `//   auto count = run_task_sync(handle.update("add_item", "\"apple\""));`
+
+**Files to modify:**
+- `cpp/include/temporalio/client/workflow_handle.h` — Add `update()` method declaration
+- `cpp/src/temporalio/client/workflow_handle.cpp` — Implement via `UpdateWorkflowExecution` RPC
+- `cpp/src/temporalio/client/temporal_client.cpp` — Add `update_workflow()` RPC method if needed
+- `cpp/examples/update_workflow/main.cpp` — Use `handle.update()` instead of workaround
+
+**Reference:** .NET SDK `WorkflowHandle.UpdateAsync()`, Go SDK `client.UpdateWorkflow()`.
+
+#### 7.4 Support Multi-Argument Activities and Callables (MEDIUM)
+
+**Problem:** Activities are limited to 0 or 1 arguments. `activity.h:36` states:
+> `"Multiple arguments not yet supported; use a single struct parameter"`
+
+The callable overload (`ActivityDefinition::create(name, callable)`) only supports zero-argument
+callables (`activity.h:64-75`), enforced by `static_assert`.
+
+**Files to modify:**
+- `cpp/include/temporalio/activities/activity.h` — Extend `create()` overloads to support variadic template parameter packs for multi-argument activities and callables
+- `cpp/src/temporalio/worker/internal/activity_worker.cpp` — Deserialize multiple input payloads to match multi-arg signatures
+
+#### 7.5 Complete `WorkflowReplayer` with Real Protobuf Types (MEDIUM)
+
+**Problem:** `WorkflowReplayer` uses placeholder types instead of actual protobuf `HistoryEvent`.
+From `workflow_replayer.h:27-29`:
+```cpp
+struct WorkflowHistoryEvent {
+    // Placeholder for the protobuf HistoryEvent type.
+    // Will be replaced with the actual proto type when bridge is wired up.
+    std::string serialized_data;
+};
+```
+
+**Files to modify:**
+- `cpp/include/temporalio/worker/workflow_replayer.h` — Replace placeholder with `temporal::api::history::v1::HistoryEvent`
+- `cpp/src/temporalio/worker/workflow_replayer.cpp` — Wire replay to bridge `WorkflowReplayer` FFI
+- `cpp/include/temporalio/common/workflow_history.h` — May need updates for real history types
+
+#### 7.6 Wire `ActivityEnvironment` Test Helper (MEDIUM)
+
+**Problem:** `ActivityEnvironment::run()` is a no-op that doesn't establish an activity context
+scope. From `activity_environment.h:62`:
+```cpp
+template <typename F>
+auto run(F&& fn) -> decltype(fn()) {
+    // TODO: Wire up actual context scope when bridge is ready
+    return fn();
+}
+```
+
+Activities under test that call `ActivityExecutionContext::current()` will get null or stale context.
+
+**Files to modify:**
+- `cpp/include/temporalio/testing/activity_environment.h` — Create a real `ActivityExecutionContext` and establish `ActivityContextScope` around the function call
+- `cpp/src/temporalio/testing/activity_environment.cpp` — Implement context creation with configurable `ActivityInfo`
+
+#### 7.7 Rename `async_` Namespace (LOW)
+
+**Problem:** The `async_` namespace uses a trailing underscore because `async` is contextually
+reserved in some compilers. This looks provisional and signals instability. Every `using` statement
+and fully-qualified reference has the awkward trailing underscore:
+```cpp
+using temporalio::async_::run_task_sync;
+temporalio::async_::Task<std::string> greet(std::string name) { ... }
+```
+
+**Candidate names:** `temporalio::coro`, `temporalio::task`, `temporalio::async_primitives`,
+or simply keep `temporalio::async_` if no better alternative is found (it's functional, just ugly).
+
+**Files affected:** All public headers in `cpp/include/temporalio/async_/`, all source files,
+all test files, all examples. This is a large mechanical rename.
+
+#### 7.8 Stabilize Nexus API (LOW)
+
+**Problem:** Nexus support is marked experimental throughout the codebase:
+- `operation_handler.h:5` — `/// WARNING: Nexus support is experimental.`
+- `temporal_worker.h:63,82,149` — Multiple fields marked `(experimental)`
+- `worker_interceptor.h:369,373,384,393,469` — Nexus interceptor methods marked experimental
+
+**Action needed:** Track upstream Nexus API changes in other Temporal SDKs. Once the Nexus
+protocol stabilizes, remove experimental warnings and freeze the C++ API surface. Populate
+sparse `OperationStartContext` fields (request_id, headers, callback_url, callback_headers,
+inbound/outbound links).
+
+#### 7.9 Fix 6 Pre-Existing CallScope Unit Test Failures (LOW)
+
+**Problem:** 6 unit tests in `call_scope_tests.cpp` fail:
+- `CallScopeTest.ByteArrayFromEmptyStringView`
+- `CallScopeTest.ByteArrayFromEmptyByteSpan`
+- `CallScopeTest.NewlineDelimitedEmpty`
+- `CallScopeTest.ByteArrayArrayEmpty`
+- `CallScopeTest.EmptyByteArrayRef`
+- `CallScopeTest.EmptyByteArrayRefArray`
+
+These test the empty byte array edge cases added for Rust FFI compatibility. The static sentinel
+pointer approach works at runtime (all E2E examples pass) but the test assertions may need updating
+to match the actual implementation behavior.
+
+**Files to modify:**
+- `cpp/tests/bridge/call_scope_tests.cpp` — Update assertions to match `empty_byte_array_ref()` / `empty_byte_array_ref_array()` behavior
+
+### 8. CI/CD Pipeline (LOWER PRIORITY)
 
 - [ ] GitHub Actions workflow for Windows (MSVC) + Linux (GCC + Clang)
 - [ ] AddressSanitizer and UndefinedBehaviorSanitizer CI runs
 - [ ] Code coverage reporting
 - [ ] Example programs verified in CI
 
-### 8. Documentation & Packaging (LOWER PRIORITY)
+### 9. Documentation & Packaging (LOWER PRIORITY)
 
 - [ ] Doxygen generation from `@file` / `///` doc comments
 - [ ] Install targets (`cmake --install`) produce correct header + lib layout
 - [ ] `find_package(temporalio)` support via CMake config files
-- [ ] README.md with build instructions and getting started guide
+- [x] README.md with build instructions and getting started guide
 
 ---
 
