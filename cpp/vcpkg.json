@@ -1,0 +1,12 @@
+{
+  "name": "temporalio",
+  "version": "0.1.0",
+  "description": "Temporal C++ SDK - durable execution framework",
+  "homepage": "https://temporal.io",
+  "dependencies": [
+    "protobuf",
+    "nlohmann-json",
+    "gtest",
+    "opentelemetry-cpp"
+  ]
+}
