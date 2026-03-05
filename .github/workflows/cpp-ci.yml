@@ -86,21 +86,21 @@ jobs:
           path: cpp/build/Testing/
           if-no-files-found: ignore
 
-  # ── Linux (GCC + coverage, Clang + ASan/UBSan) ────────────────────────────
-  # NOTE: GCC 13+ is required — GCC 12 has coroutine codegen bugs that cause
-  # heap corruption during normal workflow execution (timers, signals, activities).
+  # ── Linux (Clang 18 — coverage + ASan/UBSan) ──────────────────────────────
+  # NOTE: GCC 15+ has coroutine ICE bugs (c++/121825, c++/119370) and GCC 12
+  # has coroutine codegen bugs. Clang is used for all Linux CI jobs.
   linux:
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: gcc
-            cc: gcc-13
-            cxx: g++-13
-            packages: "gcc-13 g++-13 ninja-build lcov"
-            cmake_cxx_flags: "--coverage -fprofile-arcs -ftest-coverage"
-            cmake_linker_flags: "--coverage"
+          - name: clang
+            cc: clang-18
+            cxx: clang++-18
+            packages: "clang-18 llvm-18 ninja-build"
+            cmake_cxx_flags: "-fprofile-instr-generate -fcoverage-mapping"
+            cmake_linker_flags: "-fprofile-instr-generate"
             test_timeout: 120
             collect_coverage: true
           - name: clang-asan
@@ -163,6 +163,7 @@ jobs:
 
       - name: Run tests
         env:
+          LLVM_PROFILE_FILE: ${{ matrix.collect_coverage && format('{0}/coverage-%p-%m.profraw', github.workspace) || '' }}
           ASAN_OPTIONS: ${{ !matrix.collect_coverage && 'detect_leaks=1:halt_on_error=1' || '' }}
           UBSAN_OPTIONS: ${{ !matrix.collect_coverage && 'print_stacktrace=1:halt_on_error=1' || '' }}
         run: ctest --test-dir cpp/build --output-on-failure --timeout ${{ matrix.test_timeout }}
@@ -170,17 +171,16 @@ jobs:
       - name: Collect coverage
         if: matrix.collect_coverage
         run: |
-          lcov --capture --directory cpp/build --output-file coverage.info \
-               --gcov-tool gcov-13 \
-               --ignore-errors mismatch
-          # Remove system headers and third-party code from coverage
-          lcov --remove coverage.info \
-               '/usr/*' \
-               '*/build/_deps/*' \
-               '*/tests/*' \
-               --output-file coverage_filtered.info \
-               --ignore-errors unused
-          lcov --list coverage_filtered.info
+          llvm-profdata-18 merge -sparse ${{ github.workspace }}/coverage-*.profraw -o tests.profdata
+          llvm-cov-18 export --format=lcov \
+               --instr-profile=tests.profdata \
+               cpp/build/tests/temporalio_tests \
+               --ignore-filename-regex='(build/_deps|/usr/|tests/)' \
+               > coverage_filtered.info
+          llvm-cov-18 report \
+               --instr-profile=tests.profdata \
+               cpp/build/tests/temporalio_tests \
+               --ignore-filename-regex='(build/_deps|/usr/|tests/)'
 
       - name: Upload coverage artifact
         if: matrix.collect_coverage
@@ -197,7 +197,7 @@ jobs:
           path: cpp/build/Testing/
           if-no-files-found: ignore
 
-  # ── Linux (GCC 13 + vcpkg) ─────────────────────────────────────────────────
+  # ── Linux (Clang 18 + vcpkg) ───────────────────────────────────────────────
   linux-vcpkg:
     runs-on: ubuntu-24.04
     steps:
@@ -209,7 +209,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13 ninja-build
+          sudo apt-get install -y clang-18 ninja-build
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -226,8 +226,8 @@ jobs:
 
       - name: Configure CMake (vcpkg preset)
         env:
-          CC: gcc-13
-          CXX: g++-13
+          CC: clang-18
+          CXX: clang++-18
         run: >
           cmake --preset debug -S cpp
           -DTEMPORALIO_BUILD_EXTENSIONS=OFF
@@ -258,7 +258,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13 ninja-build
+          sudo apt-get install -y clang-18 ninja-build
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -278,13 +278,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: cpp/build/_deps
-          key: fetchcontent-gcc13-install-${{ hashFiles('cpp/CMakeLists.txt', 'cpp/tests/CMakeLists.txt') }}
-          restore-keys: fetchcontent-gcc13-install-
+          key: fetchcontent-clang18-install-${{ hashFiles('cpp/CMakeLists.txt', 'cpp/tests/CMakeLists.txt') }}
+          restore-keys: fetchcontent-clang18-install-
 
       - name: Configure CMake
         env:
-          CC: gcc-13
-          CXX: g++-13
+          CC: clang-18
+          CXX: clang++-18
         run: >
           cmake -B cpp/build -S cpp
           -G Ninja

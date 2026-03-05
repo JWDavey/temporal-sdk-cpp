@@ -29,6 +29,12 @@ function(temporalio_set_compiler_warnings target)
 
         # Coroutine support flags (compiler-specific)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "15.0")
+                message(WARNING
+                    "GCC ${CMAKE_CXX_COMPILER_VERSION} has known internal compiler errors "
+                    "with C++20 coroutines (Bug c++/121825, c++/119370). "
+                    "Consider using Clang instead: CC=clang CXX=clang++ cmake ...")
+            endif()
             # GCC requires -fcoroutines for C++20 coroutine support
             target_compile_options(${target} PRIVATE -fcoroutines)
         elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

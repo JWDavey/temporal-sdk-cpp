@@ -36,6 +36,15 @@ cmake --build cpp/build
 ctest --test-dir cpp/build --output-on-failure --timeout 120
 ```
 
+### Linux (System Clang — recommended for GCC 15+ systems)
+
+```bash
+cmake -B cpp/build -S cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build cpp/build
+ctest --test-dir cpp/build --output-on-failure --timeout 120
+```
+
 ### Linux (Clang 18 + ASan/UBSan)
 
 ```bash
@@ -183,6 +192,7 @@ UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
 
 ### Known Platform Differences
 
+- **GCC 15 coroutine ICE** — GCC 15+ has internal compiler errors in the gimplifier with lambda coroutines (Bug c++/121825, c++/119370); use Clang on rolling-release distros (Arch, Fedora Rawhide, etc.)
 - **GCC 13 required on Linux** — GCC 12 has coroutine codegen bugs causing heap corruption
 - **GCC 13 symmetric transfer bug** — `FinalAwaiter` uses `void await_suspend()` (direct resume) instead of returning `coroutine_handle<>`, which is broken in GCC 13 for certain frame layouts
 - **GCC 13 lambda coroutine bug** — lambdas with reference captures and no internal `co_await` produce broken resume code; workaround: use free-function coroutines in tests
@@ -263,4 +273,4 @@ Two independent chains: **client-side** (`ClientInterceptor` → `ClientOutbound
 - **Google Test** (GTest) — tests are in `cpp/tests/`
 - Integration tests requiring a live Temporal server use `WorkflowEnvironmentFixture`
 - Test project is also buildable via `ctest` or by running the test binary directly
-- CI runs: GCC 13 (coverage), Clang 18 (ASan/UBSan), MSVC 2022, GCC 13 + vcpkg
+- CI runs: Clang 18 (coverage), Clang 18 (ASan/UBSan), MSVC 2022, Clang 18 + vcpkg
