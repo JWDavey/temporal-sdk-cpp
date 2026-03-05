@@ -128,6 +128,8 @@ TEST(CoroutineSchedulerTest, ScheduleIncrementsSize) {
 
     EXPECT_FALSE(scheduler.empty());
     EXPECT_EQ(scheduler.size(), 1u);
+
+    scheduler.drain();
 }
 
 TEST(CoroutineSchedulerTest, DrainRunsScheduledCoroutine) {
